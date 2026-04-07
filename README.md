@@ -1,140 +1,59 @@
 # Compile
 
-Compile is a small CLI for bootstrapping and inspecting an LLM-maintained wiki workspace.
-
-The intended shape is general-purpose, not research-only: philosophy notes, personal material, project documentation, reading notes, and source-backed articles should all fit without forcing everything into `concept/entity/question`.
-
-## Scope
-
-This repo currently ships:
-
-- workspace initialization
-- a minimal raw-source ingest scaffold that creates source notes and refreshes navigation
-- Obsidian-ready vault setup
-- deterministic `index.md` and `overview.md` refresh
-- vault inspection, graph/search/navigation helpers
-- health and quality evaluation
-
-This repo does not currently ship a fully automated ingest, query, or watch pipeline. The current `ingest` command is a scaffold: it creates a provenance-aware source note, refreshes navigation, and suggests likely follow-up pages for the LLM to update.
+Compile is an LLM-maintained wiki for Obsidian. You curate sources and ask questions; Claude does all the writing, cross-referencing, and maintenance.
 
 ## Install
 
 ```bash
-uv sync                # development
-uv tool install .      # global CLI (makes `compile` available everywhere)
+uv tool install .
 ```
 
 ## Quick Start
 
-Create a workspace:
+1. **Create a workspace:**
 
 ```bash
-uv run compile init "Walker Wiki" -d "General-purpose personal knowledge base"
+compile init "My Wiki" -d "What this wiki is about"
 ```
 
-That creates:
-
-```text
-.
-├── raw/
-├── wiki/
-│   ├── articles/
-│   ├── sources/
-│   ├── maps/
-│   ├── outputs/
-│   ├── index.md
-│   ├── overview.md
-│   └── log.md
-├── .compile/
-└── .obsidian/
-```
-
-Add or update a page:
+2. **Set up Claude Code integration:**
 
 ```bash
-uv run compile obsidian upsert "Friendship" \
-  --page-type article \
-  --body "Aristotle treats friendship as a shared practice of the good."
+compile claude setup .
 ```
 
-Create a source-note scaffold from a raw artifact:
+This installs slash commands (`/capture`, `/wiki-query`, `/wiki-context`) that make the wiki accessible from any Claude Code session, plus workspace-local commands (`/ingest`, `/query`, `/lint`) for the full editing toolset.
+
+3. **Open the workspace in Obsidian** — it's already configured as a vault.
+
+4. **Start working with Claude.** Drop sources into `raw/`, then use `/ingest` to process them. Ask questions with `/wiki-query`. Claude reads, writes, and maintains the wiki — you guide it.
+
+## How It Works
+
+There are three layers:
+
+- **`raw/`** — your source documents (articles, papers, images). Immutable. Claude reads from here but never modifies it.
+- **`wiki/`** — LLM-generated markdown pages. Summaries, articles, maps, cross-references. Claude owns this layer entirely.
+- **`WIKI.md`** — the schema that tells Claude how the wiki is structured and what conventions to follow.
+
+The wiki compounds over time. Every source processed and every question answered makes it richer.
+
+## What Claude Does
+
+- **Ingest**: reads a source, writes a summary, updates the index, revises related articles, logs what changed.
+- **Query**: searches the wiki, synthesizes an answer, and files durable answers back as new pages.
+- **Lint**: audits for broken links, stale claims, missing cross-references, orphan pages, and contradictions.
+
+## Page Types
+
+- `source` — provenance-anchored note for a raw artifact
+- `article` — durable synthesis page (the default)
+- `map` — navigation page that curates a region of the wiki
+- `output` — saved answer, comparison, or derived artifact
+
+## Development
 
 ```bash
-uv run compile ingest example-paper.pdf
+uv sync
+uv run pytest
 ```
-
-Refresh navigation pages after edits:
-
-```bash
-uv run compile obsidian refresh
-```
-
-Inspect the vault:
-
-```bash
-uv run compile obsidian inspect
-uv run compile obsidian search "friendship virtue"
-uv run compile obsidian page "Friendship"
-uv run compile obsidian neighbors "Friendship"
-uv run compile obsidian graph
-```
-
-Run higher-level checks:
-
-```bash
-uv run compile health
-uv run compile status
-uv run compile schema
-```
-
-## Recommended Flow
-
-1. Run `compile init`.
-2. Put raw material in `raw/` when provenance matters.
-3. Maintain durable pages in `wiki/articles/`, `wiki/sources/`, `wiki/maps/`, and `wiki/outputs/`.
-4. Run `compile obsidian refresh` to rebuild `wiki/index.md` and `wiki/overview.md`.
-5. Use `compile obsidian inspect` and `compile health` to catch unresolved links, orphans, stale nav, and provenance gaps.
-6. Use `compile ingest <raw-file>` to scaffold a source note before doing deeper LLM maintenance work on related pages.
-
-## Page Model
-
-New workspaces are organized around a small generic set of page types:
-
-- `article`: the default durable wiki page
-- `source`: a note that anchors provenance back to `raw/`
-- `map`: a navigation or map-of-content page
-- `output`: a saved derived artifact
-- `index`, `overview`, `log`: navigation and maintenance pages
-
-Legacy `concept`, `entity`, `question`, and `dashboard` layouts are still understood by the inspector and evaluator so older workspaces continue to work.
-
-## Obsidian
-
-Compile writes normal markdown plus standard YAML frontmatter and `[[wikilinks]]`. The vault opens directly in Obsidian with:
-
-- `.obsidian/` config included
-- graph/backlinks working normally
-- navigation pages readable without chat context
-- no custom database or proprietary viewer required
-
-## Claude Code Integration
-
-Install Claude Code commands for a workspace:
-
-```bash
-compile claude setup ~/wiki
-```
-
-This installs:
-
-- **Global bridge commands** (`~/.claude/commands/`): `/capture`, `/wiki-context`, `/wiki-query` — accessible from any Claude Code session, pointed at the workspace path.
-- **Workspace-local commands** (`.claude/commands/`): `/context`, `/ingest`, `/query`, `/lint` — the full editing toolset, used when working inside the wiki.
-- **Workspace files**: `CLAUDE.md` (maintainer contract) and `.claude/settings.local.json`.
-
-Existing files are never overwritten unless you pass `--force`. If globals already point at a different workspace, the command warns instead of silently skipping.
-
-## Notes
-
-- `raw/` is optional for personal writing, but useful when you want explicit provenance.
-- `compile obsidian cleanup` quarantines empty stray markdown files outside the maintained wiki.
-- `compile health` now combines structural Obsidian checks with content-oriented quality checks.
