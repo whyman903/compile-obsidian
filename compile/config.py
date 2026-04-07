@@ -14,8 +14,14 @@ def _load_dotenv(path: Path) -> None:
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
+        # Strip optional "export " prefix
+        if line.startswith("export "):
+            line = line[7:]
         key, value = line.split("=", 1)
         key, value = key.strip(), value.strip()
+        # Strip surrounding quotes
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+            value = value[1:-1]
         # Override if not set or empty
         if not os.environ.get(key):
             os.environ[key] = value
@@ -56,8 +62,21 @@ class Config:
         return self.workspace_root / "WIKI.md"
 
 
+def _discover_workspace_root(start: Path) -> Path | None:
+    """Walk up from *start* looking for a ``.compile/config.yaml`` marker."""
+    for candidate in [start, *start.parents]:
+        if (candidate / ".compile" / "config.yaml").exists():
+            return candidate
+    return None
+
+
 def load_config(workspace_root: Path | None = None) -> Config:
     root = workspace_root or Path.cwd()
+
+    # Walk up to find the workspace root when not found directly
+    resolved = _discover_workspace_root(root)
+    if resolved is not None:
+        root = resolved
 
     # Load .env from workspace root or parents
     for candidate in [root / ".env", root.parent / ".env", Path.home() / ".env"]:

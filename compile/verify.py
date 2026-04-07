@@ -34,7 +34,7 @@ def verify_page_content(
     issues: list[VerificationIssue] = []
     frontmatter, body, _ = parse_markdown_text(content)
 
-    for required in ("title", "type", "updated"):
+    for required in ("title", "type", "status", "summary", "created", "updated"):
         if required not in frontmatter:
             issues.append(
                 VerificationIssue("medium", "missing_frontmatter", f"Missing required frontmatter field: {required}")
@@ -112,17 +112,18 @@ def _audit_page(page: Any) -> list[dict[str, Any]]:
             }
         )
 
-    for pattern in PLACEHOLDER_PATTERNS:
-        if pattern.search(page.body):
-            issues.append(
-                {
-                    "type": "placeholder_content",
-                    "severity": "low",
-                    "title": f"{page.title}: placeholder text is still visible.",
-                    "suggestion": "Replace the placeholder with real content or remove the section until it has meaningful material.",
-                }
-            )
-            break
+    if page.page_type not in {"overview", "index"}:
+        for pattern in PLACEHOLDER_PATTERNS:
+            if pattern.search(page.body):
+                issues.append(
+                    {
+                        "type": "placeholder_content",
+                        "severity": "low",
+                        "title": f"{page.title}: placeholder text is still visible.",
+                        "suggestion": "Replace the placeholder with real content or remove the section until it has meaningful material.",
+                    }
+                )
+                break
 
     if page.page_type not in {"index", "log"} and _has_empty_section(page.body):
         issues.append(

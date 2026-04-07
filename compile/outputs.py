@@ -43,7 +43,16 @@ def generate_chart(title: str, script: str, output_dir: Path) -> Path:
     wrapper will call it automatically.
 
     Returns the path to the saved image.
+
+    Raises ``RuntimeError`` if matplotlib is not installed.
     """
+    try:
+        import matplotlib  # noqa: F401
+    except ModuleNotFoundError:
+        raise RuntimeError(
+            "matplotlib is required for chart generation. "
+            "Install it with: pip install compile-wiki\\[charts]"
+        )
     from compile.text import slugify
 
     output_dir.mkdir(parents=True, exist_ok=True)

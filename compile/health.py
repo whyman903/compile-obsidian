@@ -131,7 +131,7 @@ def build_health_report(
         "not_obsidian_ready"
         if readiness_status == "fail"
         else "needs_attention"
-        if graph_status != "pass" or content_status in {"fail", "warn"}
+        if readiness_status == "warn" or graph_status != "pass" or content_status in {"fail", "warn"}
         else "healthy"
     )
     summary = _summary_for_status(

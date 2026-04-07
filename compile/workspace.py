@@ -154,8 +154,10 @@ def write_index(config: Config, pages_by_type: dict[str, list[dict[str, str]]]) 
         ("Articles", "articles"), ("Sources", "sources"),
         ("Maps", "maps"), ("Outputs", "outputs"), ("Other", "other"),
     ]
+    index_fm = {"title": "Index", "type": "index", "created": created, "updated": now}
+    fm_text = yaml.safe_dump(index_fm, sort_keys=False, allow_unicode=True).strip()
     lines = [
-        f"---\ntitle: Index\ntype: index\ncreated: {created}\nupdated: {now}\n---\n",
+        f"---\n{fm_text}\n---\n",
         f"# {config.topic} — Index\n",
     ]
     for heading, key in sections:
@@ -183,11 +185,16 @@ def write_overview(config: Config, pages_by_type: dict[str, list[dict[str, str]]
         f"- [[{e['title']}]] — {e['summary'] or ''}" for e in pages_by_type.get("articles", [])[:8]
     ) or "_No articles yet._"
 
+    overview_fm = {
+        "title": f"{config.topic} Overview",
+        "type": "overview",
+        "created": created,
+        "updated": now,
+    }
+    fm_text = yaml.safe_dump(overview_fm, sort_keys=False, allow_unicode=True).strip()
+
     content = f"""---
-title: "{config.topic} Overview"
-type: overview
-created: {created}
-updated: {now}
+{fm_text}
 ---
 
 # {config.topic}
@@ -214,7 +221,7 @@ def append_log_entry(config: Config, kind: str, title: str, lines: list[str] | N
     log_path = config.wiki_dir / "log.md"
     now = _now()
     body = "\n".join(f"- {line}" for line in (lines or [])) or "- No details recorded."
-    entry = f"\n## [{now}] {kind} | {title}\n{body}\n"
+    entry = f"\n\n## [{now}] {kind} | {title}\n{body}\n"
 
     if log_path.exists():
         existing = log_path.read_text()
@@ -223,7 +230,7 @@ def append_log_entry(config: Config, kind: str, title: str, lines: list[str] | N
         fm.setdefault("created", now)
         if not body_text.strip():
             body_text = "# Compile Log\n"
-        fm_text = yaml.safe_dump(fm, sort_keys=False, allow_unicode=False).strip()
+        fm_text = yaml.safe_dump(fm, sort_keys=False, allow_unicode=True).strip()
         log_path.write_text(f"---\n{fm_text}\n---\n\n{body_text.rstrip()}{entry}")
     else:
         log_path.write_text(
@@ -246,7 +253,13 @@ def _save_state(config: Config, state: dict) -> None:
 def _preserved_created(path: Path, fallback: str) -> str:
     if path.exists():
         fm, _, _ = parse_markdown_text(path.read_text())
-        return str(fm.get("created") or fallback)
+        value = fm.get("created")
+        if value is None:
+            return fallback
+        # Normalize datetime objects back to ISO 8601 with T separator
+        if hasattr(value, "isoformat"):
+            return value.isoformat()
+        return str(value)
     return fallback
 
 

@@ -657,7 +657,7 @@ class ObsidianConnector:
         if ensure_title_heading and not rendered_body.startswith("# "):
             rendered_body = f"# {title}\n\n{rendered_body}"
 
-        frontmatter_text = yaml.safe_dump(frontmatter, sort_keys=False, allow_unicode=False).strip()
+        frontmatter_text = yaml.safe_dump(frontmatter, sort_keys=False, allow_unicode=True).strip()
         target_path.parent.mkdir(parents=True, exist_ok=True)
         target_path.write_text(f"---\n{frontmatter_text}\n---\n\n{rendered_body.rstrip()}\n")
         self._invalidate_cache()

@@ -37,7 +37,7 @@ class TestVerifyPageContent:
         assert any(i.code == "missing_frontmatter" and "updated" in i.message for i in issues)
 
     def test_all_frontmatter_present(self) -> None:
-        content = "---\ntitle: Test\ntype: article\nupdated: '2026-01-01'\n---\n\nBody text that is long enough to count as a real paragraph in this test."
+        content = "---\ntitle: Test\ntype: article\nstatus: seed\nsummary: A test page\ncreated: '2026-01-01'\nupdated: '2026-01-01'\n---\n\nBody text that is long enough to count as a real paragraph in this test."
         issues = verify_page_content(page_type="article", content=content)
         assert not any(i.code == "missing_frontmatter" for i in issues)
 
