@@ -126,7 +126,7 @@ def collect_pages_by_type(config: Config) -> dict[str, list[dict[str, str]]]:
         content = read_wiki_page(config, page_path)
         if not content:
             continue
-        fm, body = _parse_frontmatter(content)
+        fm, body, _ = parse_markdown_text(content)
         page_type = _bucket_for_page(str(fm.get("type") or ""), page_path)
         title = str(fm.get("title") or "").strip() or Path(page_path).stem.replace("-", " ").title()
         summary = str(fm.get("summary") or "").strip()
@@ -213,7 +213,7 @@ def append_log_entry(config: Config, kind: str, title: str, lines: list[str] | N
 
     if log_path.exists():
         existing = log_path.read_text()
-        fm, body_text = _parse_frontmatter(existing)
+        fm, body_text, _ = parse_markdown_text(existing)
         fm.update({"title": "Log", "type": "log", "updated": now})
         fm.setdefault("created", now)
         if not body_text.strip():
@@ -237,14 +237,10 @@ def _save_state(config: Config, state: dict) -> None:
     config.state_path.write_text(json.dumps(state, indent=2))
 
 
-def _parse_frontmatter(text: str) -> tuple[dict, str]:
-    frontmatter, body, _ = parse_markdown_text(text)
-    return frontmatter, body
-
 
 def _preserved_created(path: Path, fallback: str) -> str:
     if path.exists():
-        fm, _ = _parse_frontmatter(path.read_text())
+        fm, _, _ = parse_markdown_text(path.read_text())
         return str(fm.get("created") or fallback)
     return fallback
 
@@ -282,7 +278,7 @@ def _write_initial_schema(config: Config) -> None:
     desc = config.description or "Add a short description for this workspace."
     config.wiki_schema_path.write_text(f"""# Workspace Schema
 
-This file is the per-workspace overlay for the base maintainer contract in `AGENTS.md` / `CLAUDE.md`.
+This file is the per-workspace overlay for the base maintainer contract in `CLAUDE.md`.
 Use it to make topic-specific editorial decisions, not to restate generic rules.
 
 ## Topic And Framing

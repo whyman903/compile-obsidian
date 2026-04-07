@@ -83,9 +83,6 @@ def _safe_page_filename(title: str) -> str:
     return cleaned or "Untitled"
 
 
-def _extract_wikilinks(body: str) -> list[str]:
-    return extract_wikilinks(body)
-
 
 def _extract_title(path: Path, body: str, frontmatter: dict[str, Any]) -> str:
     title = str(frontmatter.get("title", "")).strip()
@@ -845,7 +842,7 @@ class ObsidianConnector:
             page_type = _inferred_page_type(relative_path)
         tags = _coerce_list(frontmatter.get("tags"))
         aliases = _coerce_list(frontmatter.get("aliases"))
-        outbound_link_targets = _extract_wikilinks(body)
+        outbound_link_targets = extract_wikilinks(body)
         word_count = len(WORD_RE.findall(body))
         return VaultPage(
             title=title,

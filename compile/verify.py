@@ -32,7 +32,7 @@ def verify_page_content(
     valid_link_targets: Iterable[str] = (),
 ) -> list[VerificationIssue]:
     issues: list[VerificationIssue] = []
-    frontmatter, body = _load_markdown_doc(content)
+    frontmatter, body, _ = parse_markdown_text(content)
 
     for required in ("title", "type", "updated"):
         if required not in frontmatter:
@@ -63,10 +63,6 @@ def verify_page_content(
 
     return issues
 
-
-def _load_markdown_doc(text: str) -> tuple[dict, str]:
-    frontmatter, body, _ = parse_markdown_text(text)
-    return frontmatter, body
 
 
 def audit_vault_content(root: Path) -> list[dict[str, Any]]:
