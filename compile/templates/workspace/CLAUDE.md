@@ -22,7 +22,7 @@ WIKI.md         Per-workspace schema (topic-specific editorial rules)
 
 ## CLI Tools
 
-Use these tools throughout your work. The `compile` CLI is installed globally via `uv tool install`.
+Use these tools throughout your work. If the entrypoint is not installed, use `uv run compile ...`.
 
 ### Discovery and inspection
 

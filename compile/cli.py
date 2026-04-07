@@ -471,6 +471,121 @@ def render_canvas(title: str, path: str, nodes: str, edges: str | None, summary:
     console.print(f"[green]Canvas created:[/green] {rel_canvas} → {page.relative_path}")
 
 
+# --- Claude Code integration ---
+
+@main.group()
+def claude() -> None:
+    """Claude Code integration — install commands and workspace files."""
+
+
+@claude.command("setup")
+@click.argument("path", default=".")
+@click.option("--force", is_flag=True, help="Overwrite existing files without prompting.")
+def claude_setup(path: str, force: bool) -> None:
+    """Install Claude Code commands for a wiki workspace.
+
+    PATH is the wiki workspace directory (default: current directory).
+
+    Installs global bridge commands (~/.claude/commands/) so the wiki is
+    accessible from any Claude Code session, and workspace-local commands
+    so the wiki itself has the full editing toolset.
+    """
+    wiki_path = Path(path).expanduser().resolve()
+    config_path = wiki_path / ".compile" / "config.yaml"
+    if not config_path.exists():
+        console.print(f"[red]No compile workspace at {wiki_path}[/red]")
+        console.print("Run 'compile init' in that directory first.")
+        raise SystemExit(1)
+
+    result = install_claude_files(wiki_path, Path.home(), force)
+
+    if result["installed"]:
+        console.print(f"[green]Installed {len(result['installed'])} file(s):[/green]")
+        for f in result["installed"]:
+            console.print(f"  + {f}")
+    if result["mispointed"]:
+        console.print(f"[red]Warning: {len(result['mispointed'])} global command(s) point at a different wiki:[/red]")
+        for f in result["mispointed"]:
+            console.print(f"  ! {f}")
+        console.print("[red]Use --force to rebind them to this workspace.[/red]")
+    if result["skipped"]:
+        console.print(f"[yellow]Skipped {len(result['skipped'])} existing file(s) (use --force to overwrite):[/yellow]")
+        for f in result["skipped"]:
+            console.print(f"  ~ {f}")
+    if not result["installed"] and not result["skipped"] and not result["mispointed"]:
+        console.print("[dim]Nothing to install.[/dim]")
+
+
+def install_claude_files(
+    wiki_path: Path, home: Path, force: bool,
+) -> dict[str, list[str]]:
+    """Install Claude Code commands for a wiki workspace.
+
+    Returns a dict with keys: installed, skipped, mispointed.
+    """
+    templates = Path(__file__).parent / "templates"
+    if not templates.is_dir():
+        raise FileNotFoundError(
+            f"Template directory not found at {templates}. "
+            "This may indicate a packaging or installation problem."
+        )
+    wiki_path_str = str(wiki_path)
+    installed: list[str] = []
+    skipped: list[str] = []
+    mispointed: list[str] = []
+
+    # --- Global bridge commands ---
+    global_dir = home / ".claude" / "commands"
+    global_dir.mkdir(parents=True, exist_ok=True)
+
+    for template_file in sorted((templates / "global").iterdir()):
+        dest = global_dir / template_file.name
+        if dest.exists() and not force:
+            existing = dest.read_text()
+            marker = f"My wiki lives at: {wiki_path_str}\n"
+            if marker not in existing:
+                mispointed.append(str(dest))
+            else:
+                skipped.append(str(dest))
+            continue
+        content = template_file.read_text().replace("{{wiki_path}}", wiki_path_str)
+        dest.write_text(content)
+        installed.append(str(dest))
+
+    # --- Workspace-local files ---
+    workspace_claude_dir = wiki_path / ".claude" / "commands"
+    workspace_claude_dir.mkdir(parents=True, exist_ok=True)
+
+    # CLAUDE.md
+    claude_md_src = templates / "workspace" / "CLAUDE.md"
+    claude_md_dest = wiki_path / "CLAUDE.md"
+    if claude_md_dest.exists() and not force:
+        skipped.append(str(claude_md_dest))
+    else:
+        claude_md_dest.write_text(claude_md_src.read_text())
+        installed.append(str(claude_md_dest))
+
+    # settings.local.json
+    settings_src = templates / "workspace" / "settings.local.json"
+    settings_dest = wiki_path / ".claude" / "settings.local.json"
+    if settings_dest.exists() and not force:
+        skipped.append(str(settings_dest))
+    else:
+        settings_dest.write_text(settings_src.read_text())
+        installed.append(str(settings_dest))
+
+    # Workspace commands
+    for template_file in sorted((templates / "workspace" / "commands").iterdir()):
+        dest = workspace_claude_dir / template_file.name
+        if dest.exists() and not force:
+            skipped.append(str(dest))
+            continue
+        dest.write_text(template_file.read_text())
+        installed.append(str(dest))
+
+    return {"installed": installed, "skipped": skipped, "mispointed": mispointed}
+
+
 def _resolve_raw_source(workspace_root: Path, source: str) -> Path:
     candidate = Path(source)
     if candidate.is_absolute():
