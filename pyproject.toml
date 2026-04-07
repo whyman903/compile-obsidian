@@ -8,9 +8,13 @@ dependencies = [
   "beautifulsoup4>=4.12.3",
   "click>=8.1",
   "httpx>=0.28.1",
+  "markdownify>=0.14",
   "pyyaml>=6.0.3",
   "rich>=13.0",
 ]
+
+[project.optional-dependencies]
+charts = ["matplotlib>=3.8"]
 
 [project.scripts]
 compile = "compile.cli:main"

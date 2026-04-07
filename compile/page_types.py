@@ -8,3 +8,4 @@ OUTPUT_PAGE_TYPES = {"comparison", "output"}
 CONTENT_PAGE_TYPES = ARTICLE_PAGE_TYPES | OUTPUT_PAGE_TYPES
 DEFAULT_PAGE_TYPES = {"source", "article", "map", "output", "index", "overview", "log"}
 MATURITY_STATES = {"seed", "emerging", "stable"}
+OUTPUT_FORMATS = {"markdown", "marp", "chart", "canvas"}
