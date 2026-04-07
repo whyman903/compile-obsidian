@@ -20,7 +20,8 @@ This repo does not currently ship a fully automated ingest, query, or watch pipe
 ## Install
 
 ```bash
-uv sync
+uv sync                # development
+uv tool install .      # global CLI (makes `compile` available everywhere)
 ```
 
 ## Quick Start
@@ -115,6 +116,22 @@ Compile writes normal markdown plus standard YAML frontmatter and `[[wikilinks]]
 - graph/backlinks working normally
 - navigation pages readable without chat context
 - no custom database or proprietary viewer required
+
+## Claude Code Integration
+
+Install Claude Code commands for a workspace:
+
+```bash
+compile claude setup ~/wiki
+```
+
+This installs:
+
+- **Global bridge commands** (`~/.claude/commands/`): `/capture`, `/wiki-context`, `/wiki-query` — accessible from any Claude Code session, pointed at the workspace path.
+- **Workspace-local commands** (`.claude/commands/`): `/context`, `/ingest`, `/query`, `/lint` — the full editing toolset, used when working inside the wiki.
+- **Workspace files**: `CLAUDE.md` (maintainer contract) and `.claude/settings.local.json`.
+
+Existing files are never overwritten unless you pass `--force`. If globals already point at a different workspace, the command warns instead of silently skipping.
 
 ## Notes
 
