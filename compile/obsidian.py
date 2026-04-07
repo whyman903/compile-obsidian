@@ -586,6 +586,7 @@ class ObsidianConnector:
         aliases: list[str] | None = None,
         summary: str | None = None,
         relative_path: str | None = None,
+        extra_frontmatter: dict[str, Any] | None = None,
     ) -> VaultPage:
         self.scan()
 
@@ -647,6 +648,9 @@ class ObsidianConnector:
                 cssclasses.append(item)
         if cssclasses:
             frontmatter["cssclasses"] = cssclasses
+
+        if extra_frontmatter:
+            frontmatter.update(extra_frontmatter)
 
         rendered_body = body.strip()
         if not rendered_body.startswith("# "):

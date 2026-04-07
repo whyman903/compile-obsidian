@@ -9,21 +9,23 @@ from compile.outputs import generate_canvas, generate_marp
 
 
 class TestGenerateMarp:
-    def test_basic_deck(self) -> None:
-        result = generate_marp("My Deck", "# Slide 1\n---\n# Slide 2")
-        assert "marp: true" in result
-        assert "title: \"My Deck\"" in result
-        assert "# Slide 1" in result
-        assert "---" in result
-        assert "# Slide 2" in result
+    def test_returns_body_and_frontmatter(self) -> None:
+        body, fm = generate_marp("My Deck", "# Slide 1\n---\n# Slide 2")
+        assert fm["marp"] is True
+        assert fm["paginate"] is True
+        assert "# Slide 1" in body
+        assert "---" in body
+        assert "# Slide 2" in body
+        # Body should NOT contain its own frontmatter block
+        assert body.count("---") == 1  # only the slide separator
 
     def test_custom_theme(self) -> None:
-        result = generate_marp("Deck", "content", theme="gaia")
-        assert "theme: gaia" in result
+        _, fm = generate_marp("Deck", "content", theme="gaia")
+        assert fm["theme"] == "gaia"
 
     def test_paginate_enabled(self) -> None:
-        result = generate_marp("Deck", "content")
-        assert "paginate: true" in result
+        _, fm = generate_marp("Deck", "content")
+        assert fm["paginate"] is True
 
 
 class TestGenerateCanvas:
@@ -76,3 +78,14 @@ class TestGenerateCanvas:
         edges = [{"from": "a", "to": "b", "label": "relates to"}]
         result = json.loads(generate_canvas("Test", nodes, edges))
         assert result["edges"][0]["label"] == "relates to"
+
+    def test_index_based_edges(self) -> None:
+        nodes = [{"text": "First"}, {"text": "Second"}, {"text": "Third"}]
+        edges = [{"from": 0, "to": 1}, {"from": 1, "to": 2}]
+        result = json.loads(generate_canvas("Test", nodes, edges))
+        # Edges should resolve to the auto-generated node IDs
+        node_ids = [n["id"] for n in result["nodes"]]
+        assert result["edges"][0]["fromNode"] == node_ids[0]
+        assert result["edges"][0]["toNode"] == node_ids[1]
+        assert result["edges"][1]["fromNode"] == node_ids[1]
+        assert result["edges"][1]["toNode"] == node_ids[2]

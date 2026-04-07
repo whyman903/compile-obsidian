@@ -6,7 +6,7 @@ from unittest.mock import patch, MagicMock
 import httpx
 import pytest
 
-from compile.fetch import fetch_url, _extract_title, _clean_markdown
+from compile.fetch import fetch_url, _extract_title, _clean_markdown, _strip_duplicate_title
 
 
 @pytest.fixture
@@ -105,3 +105,37 @@ class TestCleanMarkdown:
     def test_strips_trailing_whitespace(self) -> None:
         result = _clean_markdown("hello   \nworld   ")
         assert result == "hello\nworld\n"
+
+
+class TestStripDuplicateTitle:
+    def test_removes_matching_h1(self) -> None:
+        result = _strip_duplicate_title("# My Article\n\nBody text.\n", "My Article")
+        assert result == "Body text.\n"
+
+    def test_keeps_non_matching_h1(self) -> None:
+        result = _strip_duplicate_title("# Different Title\n\nBody.\n", "My Article")
+        assert result == "# Different Title\n\nBody.\n"
+
+    def test_case_insensitive(self) -> None:
+        result = _strip_duplicate_title("# my article\n\nBody.\n", "My Article")
+        assert result == "Body.\n"
+
+    def test_no_heading(self) -> None:
+        result = _strip_duplicate_title("Just body text.\n", "Title")
+        assert result == "Just body text.\n"
+
+
+class TestFetchUrlNoDuplicateHeading:
+    def test_no_duplicate_title(self, raw_dir: Path) -> None:
+        html = """
+        <html>
+        <head><title>Example</title></head>
+        <body><article><h1>Example</h1><p>Content here.</p></article></body>
+        </html>
+        """
+        with patch("compile.fetch.httpx.get", return_value=_mock_response(html)):
+            path, title = fetch_url("https://example.com/article", raw_dir)
+
+        content = path.read_text()
+        # Should have exactly one "# Example", not two
+        assert content.count("# Example") == 1
