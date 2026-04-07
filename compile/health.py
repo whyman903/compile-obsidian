@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from compile.obsidian import ObsidianConnector, VaultIssue
+from compile.verify import audit_vault_content
 
 
 READINESS_CODES = {
@@ -110,16 +111,19 @@ def build_health_report(
     *,
     content_issues: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    resolved_root = root.resolve()
     connector = ObsidianConnector(root.resolve())
     vault = connector.inspect()
     readiness_issues, graph_issues = _split_structural_issues(vault.issues)
+    if content_issues is None:
+        content_issues = audit_vault_content(resolved_root)
     readiness_counts = _severity_counts(readiness_issues)
     graph_counts = _severity_counts(graph_issues)
-    content_counts = _severity_counts(content_issues or [])
+    content_counts = _severity_counts(content_issues)
 
     readiness_status = _status_from_counts(readiness_counts)
     graph_status = _status_from_counts(graph_counts)
-    content_status = "not_run" if content_issues is None else _status_from_counts(content_counts)
+    content_status = _status_from_counts(content_counts)
 
     generated_at = datetime.now(UTC).replace(microsecond=0).isoformat()
     workspace_id = _workspace_id(root)
@@ -141,20 +145,19 @@ def build_health_report(
     )
 
     issues = [*readiness_issues, *graph_issues]
-    if content_issues is not None:
-        issues.extend(
-            {
-                "category": "content_health",
-                "code": str(issue.get("type") or "content_issue"),
-                "severity": str(issue.get("severity") or "low"),
-                "message": str(issue.get("title") or issue.get("suggestion") or "Content issue"),
-                "details": {
-                    "title": str(issue.get("title") or ""),
-                    "suggestion": str(issue.get("suggestion") or ""),
-                },
-            }
-            for issue in content_issues
-        )
+    issues.extend(
+        {
+            "category": "content_health",
+            "code": str(issue.get("type") or "content_issue"),
+            "severity": str(issue.get("severity") or "low"),
+            "message": str(issue.get("title") or issue.get("suggestion") or "Content issue"),
+            "details": {
+                "title": str(issue.get("title") or ""),
+                "suggestion": str(issue.get("suggestion") or ""),
+            },
+        }
+        for issue in content_issues
+    )
 
     return {
         "id": f"health_{sha1(f'{workspace_id}:{generated_at}'.encode('utf-8')).hexdigest()[:10]}",
@@ -177,14 +180,14 @@ def build_health_report(
         "content_health": {
             "status": content_status,
             "counts": content_counts,
-            "issues": content_issues or [],
+            "issues": content_issues,
         },
         "metrics": {
             "pages": vault.total_pages,
             "pages_with_wikilinks": vault.pages_with_wikilinks,
             "unresolved_links": vault.unresolved_link_count,
             "orphan_pages": vault.orphan_page_count,
-            "single_source_synthesis_pages": len(vault.single_source_synthesis_pages),
+            "thin_pages": len(vault.thin_pages),
             "raw_files_without_source_notes": len(vault.raw_files_without_source_notes),
             "source_pages_without_raw_links": len(vault.source_pages_without_raw_links),
         },

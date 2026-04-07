@@ -1,7 +1,7 @@
 [project]
 name = "compile-wiki"
 version = "0.2.0"
-description = "Compile: an LLM-maintained research wiki. Drop sources, get a living knowledge base."
+description = "Compile: an LLM-maintained wiki workspace for persistent personal knowledge."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -10,7 +10,6 @@ dependencies = [
   "httpx>=0.28.1",
   "pyyaml>=6.0.3",
   "rich>=13.0",
-  "watchdog>=4.0",
 ]
 
 [project.scripts]

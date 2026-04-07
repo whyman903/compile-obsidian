@@ -1,17 +1,21 @@
 # Compile
 
-An LLM-maintained research wiki. Drop sources in, get a living knowledge base out.
+Compile is a small CLI for bootstrapping and inspecting an LLM-maintained wiki workspace.
 
-Compile is built around a persistent wiki, not one-shot chat over documents. It maintains source notes, concept pages, entity pages, question pages, dashboards, and saved outputs as normal markdown that can be opened directly in Obsidian.
+The intended shape is general-purpose, not research-only: philosophy notes, personal material, project documentation, reading notes, and source-backed articles should all fit without forcing everything into `concept/entity/question`.
 
-## Workspace Modes
+## Scope
 
-Compile currently recognizes two workspace shapes:
+This repo currently ships:
 
-- `compile_workspace`: the primary product. This is a native Compile vault with `.compile/`, `wiki/`, and `.obsidian/`.
-- `backend_workspace`: a backend-exported page store with `workspace.json` and `pages/`. These can be inspected, searched, and health-checked, but they are not Obsidian-native by default.
+- workspace initialization
+- a minimal raw-source ingest scaffold that creates source notes and refreshes navigation
+- Obsidian-ready vault setup
+- deterministic `index.md` and `overview.md` refresh
+- vault inspection, graph/search/navigation helpers
+- health and quality evaluation
 
-If you care about Obsidian graph quality, backlinks, and `[[wikilinks]]`, treat `compile_workspace` as the canonical format.
+This repo does not currently ship a fully automated ingest, query, or watch pipeline. The current `ingest` command is a scaffold: it creates a provenance-aware source note, refreshes navigation, and suggests likely follow-up pages for the LLM to update.
 
 ## Install
 
@@ -19,182 +23,101 @@ If you care about Obsidian graph quality, backlinks, and `[[wikilinks]]`, treat 
 uv sync
 ```
 
-Set your API key in `.env`:
-
-```bash
-ANTHROPIC_API_KEY=sk-ant-...
-```
-
-Optional:
-
-```bash
-ANTHROPIC_MODEL=claude-sonnet-4-20250514
-```
-
 ## Quick Start
 
-### Create a Compile workspace
+Create a workspace:
 
 ```bash
-compile init "AI Agents for Debugging"
+uv run compile init "Walker Wiki" -d "General-purpose personal knowledge base"
 ```
 
-This creates:
+That creates:
 
 ```text
 .
 ├── raw/
 ├── wiki/
+│   ├── articles/
+│   ├── sources/
+│   ├── maps/
+│   ├── outputs/
 │   ├── index.md
 │   ├── overview.md
-│   ├── log.md
-│   ├── sources/
-│   ├── concepts/
-│   ├── entities/
-│   ├── questions/
-│   ├── outputs/
-│   └── dashboards/
+│   └── log.md
 ├── .compile/
-│   ├── config.yaml
-│   ├── state.json
-│   ├── evidence.db
-│   └── source-packets/
 └── .obsidian/
 ```
 
-### Add sources
-
-Drop files into `raw/`, then run:
+Add or update a page:
 
 ```bash
-compile ingest
-compile ingest raw/some-paper.pdf
-compile ingest https://example.com/article
+uv run compile obsidian upsert "Friendship" \
+  --page-type article \
+  --body "Aristotle treats friendship as a shared practice of the good."
 ```
 
-Compile will:
-
-- extract source packets
-- analyze sources with Anthropic
-- maintain source, concept, entity, and question pages
-- normalize frontmatter and sourcing
-- refresh dashboards, `index.md`, and `overview.md`
-- append to `log.md`
-
-PDFs are analyzed with Anthropic native PDF support. Compile no longer relies on local `pypdf` extraction for runtime source analysis.
-
-### Watch for new files
+Create a source-note scaffold from a raw artifact:
 
 ```bash
-compile watch
+uv run compile ingest example-paper.pdf
 ```
 
-### Ask questions
+Refresh navigation pages after edits:
 
 ```bash
-compile query "What architectural patterns recur across these sources?"
-compile query "Where do the sources disagree?" --save
+uv run compile obsidian refresh
 ```
 
-Saved answers are written to `wiki/outputs/` and indexed as derived artifacts.
-
-## Health and Inspection
-
-Compile now separates three concerns:
-
-- `compile health`: canonical workspace health report
-- `compile lint`: LLM content audit of the maintained wiki
-- `compile obsidian inspect`: deterministic vault and graph audit
-
-### Canonical health report
+Inspect the vault:
 
 ```bash
-compile health
-compile health --json-output
-compile health --write-snapshot
-compile health --path /path/to/backend-workspace
+uv run compile obsidian inspect
+uv run compile obsidian search "friendship virtue"
+uv run compile obsidian page "Friendship"
+uv run compile obsidian neighbors "Friendship"
+uv run compile obsidian graph
 ```
 
-`compile health` reports:
-
-- `obsidian_readiness`
-- `graph_health`
-- `content_health`
-
-It will not label a workspace as healthy if it has high-severity readiness failures such as missing `.obsidian` config or zero wikilinks.
-
-### Content audit
+Run higher-level checks:
 
 ```bash
-compile lint
+uv run compile health
+uv run compile status
+uv run compile schema
 ```
 
-This is the LLM audit pass over current wiki pages. Use it to surface contradictions, weak sourcing, thin synthesis, and missing connections in the maintained wiki content.
+## Recommended Flow
 
-### Obsidian inspection
+1. Run `compile init`.
+2. Put raw material in `raw/` when provenance matters.
+3. Maintain durable pages in `wiki/articles/`, `wiki/sources/`, `wiki/maps/`, and `wiki/outputs/`.
+4. Run `compile obsidian refresh` to rebuild `wiki/index.md` and `wiki/overview.md`.
+5. Use `compile obsidian inspect` and `compile health` to catch unresolved links, orphans, stale nav, and provenance gaps.
+6. Use `compile ingest <raw-file>` to scaffold a source note before doing deeper LLM maintenance work on related pages.
 
-```bash
-compile obsidian inspect
-compile obsidian inspect --json-output
-compile obsidian inspect --path data/ai-debugging
-compile obsidian inspect --path /path/to/backend-workspace
-compile obsidian page "Planner Executor Loops" --path data/ai-debugging
-compile obsidian neighbors "Planner-Executor Architecture" --path data/ai-debugging
-compile obsidian graph --path data/ai-debugging
-compile obsidian refresh --path data/ai-debugging
-compile obsidian upsert "Planner-Executor Loops" --page-type concept --body "# Planner-Executor Loops"
-```
+## Page Model
 
-Use `obsidian inspect` when you want deterministic graph facts such as:
+New workspaces are organized around a small generic set of page types:
 
-- unresolved links
-- orphan pages
-- stale navigation pages
-- raw files without source notes
-- source pages without raw backlinks
-- weak cross-source synthesis
-- auxiliary markdown clutter
+- `article`: the default durable wiki page
+- `source`: a note that anchors provenance back to `raw/`
+- `map`: a navigation or map-of-content page
+- `output`: a saved derived artifact
+- `index`, `overview`, `log`: navigation and maintenance pages
 
-## Storage Model
-
-Runtime state is SQLite-backed.
-
-- `.compile/evidence.db` is the source of truth for source packets, analyses, claims, aliases, and page catalog state.
-- `page_catalog` powers query selection, search, alias resolution, and page metadata lookup.
-- in-memory evidence views used during ingest and synthesis are reconstructed from SQLite at runtime.
-
-`evidence.json` remains only as a compatibility/export layer for older tests and utilities. The normal ingest, query, synthesis, and navigation workflows no longer depend on it as a required runtime store.
+Legacy `concept`, `entity`, `question`, and `dashboard` layouts are still understood by the inspector and evaluator so older workspaces continue to work.
 
 ## Obsidian
 
-Open a `compile_workspace` directory as an Obsidian vault:
+Compile writes normal markdown plus standard YAML frontmatter and `[[wikilinks]]`. The vault opens directly in Obsidian with:
 
-- graph view uses `[[wikilinks]]`
-- backlinks work normally
-- frontmatter stays standard YAML
-- dashboards and nav pages stay readable without chat context
-
-Backend-exported workspaces can be inspected with Compile, but they are not Obsidian-ready unless they are upgraded to include `.obsidian` config, wikilinks, and proper raw-source backlinks.
-
-## Status and Schema
-
-```bash
-compile status
-compile schema show
-compile schema refresh
-```
-
-## Tests
-
-```bash
-uv run pytest -q
-uv run pytest -k "not full_ingest"
-```
-
-The offline suite should pass without API access. Integration-style tests that hit the Anthropic API remain opt-in or skipped without credentials.
+- `.obsidian/` config included
+- graph/backlinks working normally
+- navigation pages readable without chat context
+- no custom database or proprietary viewer required
 
 ## Notes
 
-- Compile-native workspaces are the mainline product.
-- Backend workspaces are valid inspection targets, but lower-quality Obsidian artifacts unless explicitly converted.
-- Health summaries should be read as layered status, not a single opaque score.
+- `raw/` is optional for personal writing, but useful when you want explicit provenance.
+- `compile obsidian cleanup` quarantines empty stray markdown files outside the maintained wiki.
+- `compile health` now combines structural Obsidian checks with content-oriented quality checks.

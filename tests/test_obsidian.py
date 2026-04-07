@@ -218,7 +218,7 @@ def test_health_cli_reports_backend_workspace_as_not_obsidian_ready(tmp_path: Pa
     assert "healthy" not in payload["summary"].lower()
 
 
-def test_health_cli_writes_snapshot(tmp_path: Path) -> None:
+def test_health_cli_runs(tmp_path: Path) -> None:
     workspace_root = tmp_path / "demo"
     pages_dir = workspace_root / "pages"
     pages_dir.mkdir(parents=True)
@@ -231,50 +231,66 @@ def test_health_cli_writes_snapshot(tmp_path: Path) -> None:
     )
 
     runner = CliRunner()
-    result = runner.invoke(main, ["health", "--path", str(workspace_root), "--write-snapshot"])
+    result = runner.invoke(main, ["health", "--path", str(workspace_root)])
 
     assert result.exit_code == 0
-    snapshot_path = workspace_root / "health" / "latest.json"
-    assert snapshot_path.exists()
-    payload = json.loads(snapshot_path.read_text())
-    assert payload["overall_status"] == "not_obsidian_ready"
+    assert "not_obsidian_ready" in result.output
 
 
-def test_obsidian_cli_upsert_refreshes_compile_nav_pages(tmp_path: Path) -> None:
-    init_workspace(tmp_path, "Test Topic", "Connector coverage.")
+def test_health_cli_runs_content_audit_for_clean_compile_workspace(tmp_path: Path) -> None:
+    config = init_workspace(tmp_path, "Test Topic", "Connector coverage.")
     runner = CliRunner()
-    body = "## Summary\n\nPlanner executor loops improve recovery under long tasks."
 
-    result = runner.invoke(
-        main,
-        [
-            "obsidian",
-            "upsert",
-            "Planner-Executor Loops",
-            "--page-type",
-            "concept",
-            "--path",
-            str(tmp_path),
-            "--body",
-            body,
-            "--tag",
-            "testing",
-            "--summary",
-            "A maintained concept page.",
-        ],
+    _write_page(
+        tmp_path / "wiki" / "articles" / "friendship.md",
+        "Friendship",
+        "article",
+        "Friendship is a durable relation shaped by reciprocity and shared practice.\n\n"
+        "It links naturally to [[Index]].",
     )
+    pages_by_type = collect_pages_by_type(config)
+    write_index(config, pages_by_type)
+    from compile.workspace import write_overview
+
+    write_overview(config, pages_by_type)
+
+    result = runner.invoke(main, ["health", "--path", str(tmp_path), "--json-output"])
 
     assert result.exit_code == 0
-    connector = ObsidianConnector(tmp_path)
-    page = connector.get_page("Planner-Executor Loops")
-    assert page.page_type == "concept"
+    payload = json.loads(result.output)
+    assert payload["content_health"]["status"] == "pass"
 
-    index_text = (tmp_path / "wiki" / "index.md").read_text()
-    overview_text = (tmp_path / "wiki" / "overview.md").read_text()
-    log_text = (tmp_path / "wiki" / "log.md").read_text()
-    assert "[[Planner-Executor Loops]]" in index_text
-    assert "[[Planner-Executor Loops]]" in overview_text
-    assert "Upserted wiki/concepts/Planner-Executor Loops.md" in log_text
+
+def test_health_cli_flags_malformed_summary(tmp_path: Path) -> None:
+    config = init_workspace(tmp_path, "Test Topic", "Connector coverage.")
+    runner = CliRunner()
+
+    (tmp_path / "wiki" / "articles").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "wiki" / "articles" / "broken.md").write_text(
+        "---\n"
+        "title: Broken Summary\n"
+        "type: article\n"
+        "status: seed\n"
+        "summary: Coupled dynamics shows  at scale.\n"
+        "created: 2026-01-01T00:00:00+00:00\n"
+        "updated: 2026-01-01T00:00:00+00:00\n"
+        "---\n\n"
+        "# Broken Summary\n\n"
+        "A page with enough body text to count as real content.\n\n"
+        "Another paragraph to avoid thin-page heuristics.\n"
+    )
+    pages_by_type = collect_pages_by_type(config)
+    write_index(config, pages_by_type)
+    from compile.workspace import write_overview
+
+    write_overview(config, pages_by_type)
+
+    result = runner.invoke(main, ["health", "--path", str(tmp_path), "--json-output"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["content_health"]["status"] == "warn"
+    assert any(issue["code"] == "malformed_summary" for issue in payload["issues"])
 
 
 def test_obsidian_cli_neighbors_accepts_high_confidence_partial_locator(tmp_path: Path) -> None:
@@ -302,14 +318,12 @@ def test_obsidian_cli_neighbors_accepts_high_confidence_partial_locator(tmp_path
             "Planner-Executor Loops",
             "--path",
             str(tmp_path),
-            "--json-output",
         ],
     )
 
     assert result.exit_code == 0
-    payload = json.loads(result.output)
-    assert payload["page"]["title"] == "Planner-Executor Loops In Debugging Agents"
-    assert "Planner-Executor Architecture" in payload["outbound_pages"]
+    assert "Planner-Executor Loops In Debugging Agents" in result.output
+    assert "Planner-Executor Architecture" in result.output
 
 
 def test_obsidian_connector_flags_navigation_provenance_and_stale_overview(tmp_path: Path) -> None:
@@ -347,7 +361,7 @@ def test_obsidian_connector_flags_navigation_provenance_and_stale_overview(tmp_p
     assert any(issue.code == "raw_files_without_source_notes" for issue in report.issues)
     assert any(issue.code == "source_pages_without_raw_links" for issue in report.issues)
     assert any(issue.code == "navigation_bottlenecks" for issue in report.issues)
-    assert any(issue.code == "limited_cross_source_synthesis" for issue in report.issues)
+    assert any(issue.code == "navigation_bottlenecks" for issue in report.issues)
     assert report.raw_files_without_source_notes == ["raw/tracked-source.md", "raw/untracked-source.md"]
     assert report.source_pages_without_raw_links == ["wiki/sources/tracked-source.md"]
     assert "wiki/overview.md" in report.stale_navigation_pages
@@ -368,3 +382,73 @@ def test_obsidian_cli_cleanup_quarantines_empty_auxiliary_files(tmp_path: Path) 
     assert not ghost.exists()
     quarantined = tmp_path / ".compile" / "quarantine" / "Planner-Executor Architecture.md"
     assert quarantined.exists()
+
+
+def test_obsidian_cli_upsert_writes_generic_article_page(tmp_path: Path) -> None:
+    init_workspace(tmp_path, "Test Topic", "Connector coverage.")
+    runner = CliRunner()
+
+    result = runner.invoke(
+        main,
+        [
+            "obsidian",
+            "upsert",
+            "Friendship",
+            "--page-type",
+            "article",
+            "--body",
+            "A durable page about reciprocal goodwill.",
+            "--path",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    article_path = tmp_path / "wiki" / "articles" / "Friendship.md"
+    assert article_path.exists()
+    assert "type: article" in article_path.read_text()
+
+
+def test_obsidian_cli_refresh_rebuilds_generic_navigation(tmp_path: Path) -> None:
+    init_workspace(tmp_path, "Test Topic", "Connector coverage.")
+    runner = CliRunner()
+
+    _write_page(
+        tmp_path / "wiki" / "articles" / "friendship.md",
+        "Friendship",
+        "article",
+        "See [[Virtue]].",
+    )
+
+    result = runner.invoke(main, ["obsidian", "refresh", "--path", str(tmp_path)])
+
+    assert result.exit_code == 0
+    index_text = (tmp_path / "wiki" / "index.md").read_text()
+    overview_text = (tmp_path / "wiki" / "overview.md").read_text()
+    assert "[[Friendship]]" in index_text
+    assert "[[Friendship]]" in overview_text
+    assert "Articles: 1" in overview_text
+
+
+def test_ingest_cli_creates_source_scaffold_and_updates_nav(tmp_path: Path) -> None:
+    init_workspace(tmp_path, "Test Topic", "Connector coverage.")
+    runner = CliRunner()
+
+    raw_file = tmp_path / "raw" / "example-source.md"
+    raw_file.write_text("# Example Source\n\nA durable raw artifact about friendship and reciprocity.")
+
+    result = runner.invoke(main, ["ingest", "example-source.md", "--path", str(tmp_path)])
+
+    assert result.exit_code == 0
+    source_path = tmp_path / "wiki" / "sources" / "Example Source.md"
+    assert source_path.exists()
+    source_text = source_path.read_text()
+    assert "type: source" in source_text
+    assert "![[raw/example-source.md]]" in source_text
+
+    index_text = (tmp_path / "wiki" / "index.md").read_text()
+    overview_text = (tmp_path / "wiki" / "overview.md").read_text()
+    log_text = (tmp_path / "wiki" / "log.md").read_text()
+    assert "[[Example Source]]" in index_text
+    assert "Sources: 1" in overview_text
+    assert "ingest | Example Source" in log_text

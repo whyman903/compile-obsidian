@@ -10,6 +10,9 @@ from typing import Any
 
 import yaml
 
+from compile.markdown import LINE_RE, WORD_RE, extract_wikilinks, parse_markdown_file
+from compile.page_types import ARTICLE_PAGE_TYPES, CONTENT_PAGE_TYPES, NAV_PAGE_TYPES
+
 
 IGNORED_DIRS = {
     ".compile",
@@ -23,22 +26,18 @@ IGNORED_DIRS = {
     "node_modules",
 }
 
-WIKILINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
-WORD_RE = re.compile(r"\b[\w'-]+\b")
-LINE_RE = re.compile(r"\r?\n")
 INVALID_FILENAME_RE = re.compile(r'[<>:"/\\|?*]+')
-NAV_PAGE_TYPES = {"index", "overview", "log"}
-SYNTHESIS_PAGE_TYPES = {"concept", "entity", "question", "comparison"}
 STALE_OVERVIEW_MARKERS = (
     "This workspace was just initialized.",
     "_Themes will emerge as sources are compiled._",
+    "_Highlights will emerge as the wiki grows._",
     "_Source highlights will appear after the first ingest._",
 )
 STALE_INDEX_MARKERS = (
     "_No sources ingested yet._",
-    "_Concepts will appear as sources are compiled._",
-    "_Entities will appear as sources are compiled._",
-    "_Questions will appear as sources are compiled._",
+    "_No source notes yet._",
+    "_Articles will appear as the wiki grows._",
+    "_Maps of content will appear as the wiki grows._",
 )
 
 
@@ -85,12 +84,7 @@ def _safe_page_filename(title: str) -> str:
 
 
 def _extract_wikilinks(body: str) -> list[str]:
-    links: list[str] = []
-    for raw_link in WIKILINK_RE.findall(body):
-        link = raw_link.split("|", 1)[0].split("#", 1)[0].strip()
-        if link:
-            links.append(link)
-    return links
+    return extract_wikilinks(body)
 
 
 def _extract_title(path: Path, body: str, frontmatter: dict[str, Any]) -> str:
@@ -104,21 +98,27 @@ def _extract_title(path: Path, body: str, frontmatter: dict[str, Any]) -> str:
     return path.stem.replace("-", " ").replace("_", " ").strip().title()
 
 
+def _inferred_page_type(relative_path: str) -> str:
+    normalized = relative_path.replace("\\", "/")
+    folder_map = {
+        "wiki/articles/": "article",
+        "wiki/sources/": "source",
+        "wiki/maps/": "map",
+        "wiki/outputs/": "output",
+        "wiki/concepts/": "concept",
+        "wiki/entities/": "entity",
+        "wiki/questions/": "question",
+        "wiki/dashboards/": "dashboard",
+        "pages/": "article",
+    }
+    for prefix, page_type in folder_map.items():
+        if normalized.startswith(prefix):
+            return page_type
+    return "unknown"
+
+
 def _parse_markdown(path: Path) -> tuple[dict[str, Any], str, bool]:
-    text = path.read_text(errors="ignore")
-    if not text.startswith("---\n"):
-        return {}, text, False
-
-    marker = "\n---\n"
-    if marker not in text[4:]:
-        return {}, text, False
-
-    frontmatter_text, body = text[4:].split(marker, 1)
-    try:
-        frontmatter = yaml.safe_load(frontmatter_text) or {}
-    except yaml.YAMLError:
-        return {}, text, False
-    return frontmatter, body, True
+    return parse_markdown_file(path)
 
 
 def discover_vault_root(start: Path) -> Path:
@@ -213,8 +213,6 @@ class VaultReport:
     knowledge_page_count: int
     knowledge_pages_with_non_nav_inbound: int
     navigation_bottlenecks: list[str]
-    single_source_synthesis_pages: list[str]
-    multi_source_synthesis_page_count: int
     raw_file_count: int
     raw_files_without_source_notes: list[str]
     source_pages_without_raw_links: list[str]
@@ -247,8 +245,6 @@ class VaultReport:
             "knowledge_page_count": self.knowledge_page_count,
             "knowledge_pages_with_non_nav_inbound": self.knowledge_pages_with_non_nav_inbound,
             "navigation_bottlenecks": self.navigation_bottlenecks,
-            "single_source_synthesis_pages": self.single_source_synthesis_pages,
-            "multi_source_synthesis_page_count": self.multi_source_synthesis_page_count,
             "raw_file_count": self.raw_file_count,
             "raw_files_without_source_notes": self.raw_files_without_source_notes,
             "source_pages_without_raw_links": self.source_pages_without_raw_links,
@@ -370,9 +366,7 @@ class ObsidianConnector:
         thin_pages: list[str] = []
         title_groups: dict[str, list[VaultPage]] = {}
         navigation_bottlenecks: list[str] = []
-        single_source_synthesis_pages: list[str] = []
         knowledge_pages_with_non_nav_inbound = 0
-        multi_source_synthesis_page_count = 0
 
         total_outbound_links = 0
         pages_with_frontmatter = 0
@@ -381,9 +375,7 @@ class ObsidianConnector:
         resolved_file_link_count = 0
         unresolved_link_count = 0
         orphan_page_count = 0
-        knowledge_pages = [
-            page for page in pages if page.page_type in SYNTHESIS_PAGE_TYPES or page.page_type == "output"
-        ]
+        knowledge_pages = [page for page in pages if page.page_type in CONTENT_PAGE_TYPES]
 
         for page in pages:
             page_type_counts[page.page_type] = page_type_counts.get(page.page_type, 0) + 1
@@ -398,14 +390,8 @@ class ObsidianConnector:
             unresolved_link_count += len(page.unresolved_outbound_links)
             if not page.inbound_links and not page.resolved_outbound_links:
                 orphan_page_count += 1
-            if page.page_type in {"concept", "entity", "comparison"} and page.word_count < 120:
+            if page.page_type in ARTICLE_PAGE_TYPES | {"comparison"} and page.word_count < 120:
                 thin_pages.append(page.relative_path)
-            if page.page_type in SYNTHESIS_PAGE_TYPES:
-                supporting_sources = self._resolve_supporting_source_pages(page)
-                if len(supporting_sources) <= 1:
-                    single_source_synthesis_pages.append(page.relative_path)
-                else:
-                    multi_source_synthesis_page_count += 1
             if page in knowledge_pages:
                 if self._has_non_nav_inbound(page):
                     knowledge_pages_with_non_nav_inbound += 1
@@ -456,7 +442,6 @@ class ObsidianConnector:
             orphan_page_count=orphan_page_count,
             knowledge_pages=knowledge_pages,
             navigation_bottlenecks=navigation_bottlenecks,
-            single_source_synthesis_pages=single_source_synthesis_pages,
             raw_files_without_source_notes=raw_files_without_source_notes,
             source_pages_without_raw_links=source_pages_without_raw_links,
             empty_markdown_files=empty_markdown_files,
@@ -491,8 +476,6 @@ class ObsidianConnector:
             knowledge_page_count=len(knowledge_pages),
             knowledge_pages_with_non_nav_inbound=knowledge_pages_with_non_nav_inbound,
             navigation_bottlenecks=navigation_bottlenecks,
-            single_source_synthesis_pages=single_source_synthesis_pages,
-            multi_source_synthesis_page_count=multi_source_synthesis_page_count,
             raw_file_count=len(raw_file_paths),
             raw_files_without_source_notes=raw_files_without_source_notes,
             source_pages_without_raw_links=source_pages_without_raw_links,
@@ -665,9 +648,6 @@ class ObsidianConnector:
         for item in (page_type, str(frontmatter["status"])):
             if item not in cssclasses:
                 cssclasses.append(item)
-        if page_type in {"concept", "entity", "question"} and str(frontmatter["status"]) != "stable":
-            if "provisional" not in cssclasses:
-                cssclasses.append("provisional")
         if cssclasses:
             frontmatter["cssclasses"] = cssclasses
 
@@ -776,11 +756,17 @@ class ObsidianConnector:
         filename = f"{_safe_page_filename(title)}.md"
         if self.layout == "compile_workspace":
             folder_map = {
+                "article": "wiki/articles",
                 "source": "wiki/sources",
-                "concept": "wiki/concepts",
-                "entity": "wiki/entities",
-                "question": "wiki/questions",
-                "dashboard": "wiki/dashboards",
+                "note": "wiki/articles",
+                "concept": "wiki/articles",
+                "entity": "wiki/articles",
+                "question": "wiki/articles",
+                "person": "wiki/articles",
+                "place": "wiki/articles",
+                "timeline": "wiki/articles",
+                "map": "wiki/maps",
+                "dashboard": "wiki/maps",
                 "output": "wiki/outputs",
                 "comparison": "wiki/outputs",
                 "overview": "wiki",
@@ -824,7 +810,7 @@ class ObsidianConnector:
         self._file_by_locator = {}
 
     def _default_status_for_type(self, page_type: str) -> str:
-        if page_type in {"source", "dashboard", "output", "comparison", "overview", "index", "log"}:
+        if page_type in {"source", "map", "dashboard", "output", "comparison", "overview", "index", "log"}:
             return "stable"
         return "seed"
 
@@ -851,13 +837,15 @@ class ObsidianConnector:
     def _parse_page(self, path: Path) -> VaultPage:
         frontmatter, body, has_frontmatter = _parse_markdown(path)
         title = _extract_title(path, body, frontmatter)
+        relative_path = str(path.relative_to(self.root)).replace("\\", "/")
         page_type = str(
             frontmatter.get("type") or frontmatter.get("page_type") or "unknown"
         ).strip() or "unknown"
+        if page_type == "unknown":
+            page_type = _inferred_page_type(relative_path)
         tags = _coerce_list(frontmatter.get("tags"))
         aliases = _coerce_list(frontmatter.get("aliases"))
         outbound_link_targets = _extract_wikilinks(body)
-        relative_path = str(path.relative_to(self.root)).replace("\\", "/")
         word_count = len(WORD_RE.findall(body))
         return VaultPage(
             title=title,
@@ -1105,7 +1093,6 @@ class ObsidianConnector:
         orphan_page_count: int,
         knowledge_pages: list[VaultPage],
         navigation_bottlenecks: list[str],
-        single_source_synthesis_pages: list[str],
         raw_files_without_source_notes: list[str],
         source_pages_without_raw_links: list[str],
         empty_markdown_files: list[str],
@@ -1210,7 +1197,7 @@ class ObsidianConnector:
                     code="thin_synthesis_pages",
                     severity="low",
                     message=(
-                        "Some synthesis pages are very short and may not add much beyond source paraphrase."
+                        "Some article-like pages are very short and may not add much beyond a stub."
                     ),
                     pages=thin_pages[:12],
                 )
@@ -1259,24 +1246,10 @@ class ObsidianConnector:
                     code="navigation_bottlenecks",
                     severity="medium",
                     message=(
-                        "Several knowledge pages rely on Index/Overview/Log as their only backlinks, which weakens "
+                        "Several content pages rely on Index/Overview/Log as their only backlinks, which weakens "
                         "Obsidian navigation and graph value."
                     ),
                     pages=navigation_bottlenecks[:12],
-                )
-            )
-
-        synthesis_pages = [page for page in knowledge_pages if page.page_type in SYNTHESIS_PAGE_TYPES]
-        if synthesis_pages and len(single_source_synthesis_pages) >= max(2, len(synthesis_pages) // 2):
-            issues.append(
-                VaultIssue(
-                    code="limited_cross_source_synthesis",
-                    severity="medium",
-                    message=(
-                        "Most synthesis pages are backed by only one source, so the wiki is still compiling summaries "
-                        "more than cross-source synthesis."
-                    ),
-                    pages=single_source_synthesis_pages[:12],
                 )
             )
 
