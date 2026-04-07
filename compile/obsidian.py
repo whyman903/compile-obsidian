@@ -658,6 +658,25 @@ class ObsidianConnector:
         self._invalidate_cache()
         return self.get_page(str(target_path.relative_to(self.root)).replace("\\", "/"))
 
+    def write_canvas(self, title: str, canvas_json: str, relative_path: str | None = None) -> str:
+        """Write an Obsidian ``.canvas`` file.  Returns the relative path."""
+        from compile.text import slugify
+        if relative_path:
+            dest = self.root / relative_path
+        else:
+            slug = slugify(title) or "canvas"
+            dest = self.root / "wiki" / "outputs" / f"{slug}.canvas"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(canvas_json)
+        return str(dest.relative_to(self.root)).replace("\\", "/")
+
+    def write_asset(self, data: bytes, filename: str, subdir: str = "wiki/outputs") -> str:
+        """Write a binary asset file.  Returns the vault-relative path."""
+        dest = self.root / subdir / filename
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(data)
+        return str(dest.relative_to(self.root)).replace("\\", "/")
+
     def scan(self) -> list[VaultPage]:
         if self._pages is not None:
             return self._pages

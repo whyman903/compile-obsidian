@@ -111,7 +111,9 @@ def read_wiki_page(config: Config, relative_path: str) -> str | None:
 
 
 def list_wiki_pages(config: Config) -> list[str]:
-    return [str(p.relative_to(config.wiki_dir)) for p in sorted(config.wiki_dir.rglob("*.md"))]
+    md_pages = sorted(config.wiki_dir.rglob("*.md"))
+    canvas_pages = sorted(config.wiki_dir.rglob("*.canvas"))
+    return [str(p.relative_to(config.wiki_dir)) for p in md_pages + canvas_pages]
 
 
 # --- Page collection and navigation ---

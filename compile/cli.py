@@ -9,8 +9,10 @@ from rich.console import Console
 from rich.table import Table
 
 from compile.config import load_config
+from compile.fetch import fetch_url
 from compile.obsidian import ObsidianConnector
-from compile.text import extract_text
+from compile.outputs import generate_canvas, generate_chart, generate_marp
+from compile.text import extract_text, is_url
 from compile.workspace import (
     append_log_entry,
     collect_pages_by_type,
@@ -73,18 +75,32 @@ def status() -> None:
 @click.argument("source")
 @click.option("--path", "-p", default=".", help="Workspace root.")
 @click.option("--title", default=None, help="Optional override title for the generated source note.")
-def ingest(source: str, path: str, title: str | None) -> None:
-    """Create a minimal source-note scaffold for a raw artifact."""
+@click.option("--images/--no-images", default=False, help="Download referenced images when ingesting a URL.")
+def ingest(source: str, path: str, title: str | None, images: bool) -> None:
+    """Create a minimal source-note scaffold for a raw artifact or URL."""
     config = load_config(Path(path).resolve())
-    raw_path = _resolve_raw_source(config.workspace_root, source)
-    if not raw_path.exists() or not raw_path.is_file():
-        console.print(f"[red]Raw source not found:[/red] {raw_path}")
-        raise SystemExit(1)
-    try:
-        raw_path.relative_to(config.workspace_root)
-    except ValueError:
-        console.print("[red]Raw source must live inside the workspace root.[/red]")
-        raise SystemExit(1)
+
+    if is_url(source):
+        try:
+            raw_path, fetched_title = fetch_url(
+                source, config.raw_dir, download_images=images,
+            )
+        except Exception as exc:
+            console.print(f"[red]Failed to fetch URL:[/red] {exc}")
+            raise SystemExit(1)
+        if title is None:
+            title = fetched_title
+        console.print(f"[green]Fetched URL → [/green]{raw_path.relative_to(config.workspace_root)}")
+    else:
+        raw_path = _resolve_raw_source(config.workspace_root, source)
+        if not raw_path.exists() or not raw_path.is_file():
+            console.print(f"[red]Raw source not found:[/red] {raw_path}")
+            raise SystemExit(1)
+        try:
+            raw_path.relative_to(config.workspace_root)
+        except ValueError:
+            console.print("[red]Raw source must live inside the workspace root.[/red]")
+            raise SystemExit(1)
 
     extracted_title, extracted_text = extract_text(raw_path)
     source_title = title or extracted_title
@@ -338,6 +354,113 @@ def obsidian_upsert(
         relative_path=relative_path,
     )
     console.print(f"[green]Upserted[/green] {page.relative_path}")
+
+
+# --- Rich output rendering ---
+
+@main.group()
+def render() -> None:
+    """Generate rich output formats (Marp slides, charts, canvas)."""
+
+
+@render.command("marp")
+@click.argument("title")
+@click.option("--path", "-p", default=".", help="Workspace root.")
+@click.option("--body", required=True, help="Slide markdown (use --- for slide separators).")
+@click.option("--theme", default="default", help="Marp theme name.")
+@click.option("--summary", default=None, help="Frontmatter summary.")
+@click.option("--tag", "tags", multiple=True)
+def render_marp(title: str, path: str, body: str, theme: str, summary: str | None, tags: tuple[str, ...]) -> None:
+    """Generate a Marp slide deck and save as a wiki output page."""
+    config = _load_workspace()
+    connector = ObsidianConnector(Path(path).resolve())
+    marp_body = generate_marp(title, body, theme=theme)
+    page = connector.upsert_page(
+        title=title,
+        body=marp_body,
+        page_type="output",
+        summary=summary or f"Marp slide deck: {title}",
+        tags=list(tags),
+    )
+    pages_by_type = collect_pages_by_type(config)
+    write_index(config, pages_by_type)
+    write_overview(config, pages_by_type)
+    append_log_entry(config, "render", title, [f"Format: marp", f"Page: {page.relative_path}"])
+    console.print(f"[green]Marp deck created:[/green] {page.relative_path}")
+
+
+@render.command("chart")
+@click.argument("title")
+@click.option("--path", "-p", default=".", help="Workspace root.")
+@click.option("--script", required=True, help="Python matplotlib script.")
+@click.option("--summary", default=None, help="Frontmatter summary.")
+@click.option("--tag", "tags", multiple=True)
+def render_chart(title: str, path: str, script: str, summary: str | None, tags: tuple[str, ...]) -> None:
+    """Execute a matplotlib script and save the chart as a wiki output page."""
+    config = _load_workspace()
+    connector = ObsidianConnector(Path(path).resolve())
+    output_dir = config.wiki_dir / "outputs"
+    try:
+        image_path = generate_chart(title, script, output_dir)
+    except RuntimeError as exc:
+        console.print(f"[red]Chart generation failed:[/red] {exc}")
+        raise SystemExit(1)
+    rel_image = image_path.relative_to(config.workspace_root)
+    body = f"![[{rel_image}]]\n\n## Script\n\n```python\n{script}\n```\n"
+    page = connector.upsert_page(
+        title=title,
+        body=body,
+        page_type="output",
+        summary=summary or f"Chart: {title}",
+        tags=list(tags),
+    )
+    pages_by_type = collect_pages_by_type(config)
+    write_index(config, pages_by_type)
+    write_overview(config, pages_by_type)
+    append_log_entry(config, "render", title, [f"Format: chart", f"Image: {rel_image}", f"Page: {page.relative_path}"])
+    console.print(f"[green]Chart created:[/green] {image_path.name} → {page.relative_path}")
+
+
+@render.command("canvas")
+@click.argument("title")
+@click.option("--path", "-p", default=".", help="Workspace root.")
+@click.option("--nodes", required=True, help='JSON array of node objects (each with "text" key).')
+@click.option("--edges", default=None, help='Optional JSON array of edge objects (each with "from" and "to" keys).')
+@click.option("--summary", default=None, help="Frontmatter summary.")
+def render_canvas(title: str, path: str, nodes: str, edges: str | None, summary: str | None) -> None:
+    """Generate an Obsidian Canvas file and a companion wiki output page."""
+    config = _load_workspace()
+    connector = ObsidianConnector(Path(path).resolve())
+    try:
+        node_list = json.loads(nodes)
+        edge_list = json.loads(edges) if edges else []
+    except json.JSONDecodeError as exc:
+        console.print(f"[red]Invalid JSON:[/red] {exc}")
+        raise SystemExit(1)
+
+    canvas_json = generate_canvas(title, node_list, edge_list)
+
+    # Write the .canvas file
+    from compile.text import slugify
+    slug = slugify(title) or "canvas"
+    canvas_path = config.wiki_dir / "outputs" / f"{slug}.canvas"
+    canvas_path.parent.mkdir(parents=True, exist_ok=True)
+    canvas_path.write_text(canvas_json)
+
+    # Create a companion markdown page
+    rel_canvas = canvas_path.relative_to(config.workspace_root)
+    body = f"Canvas file: [[{rel_canvas}]]\n\nNodes: {len(node_list)} | Edges: {len(edge_list)}\n"
+    page = connector.upsert_page(
+        title=title,
+        body=body,
+        page_type="output",
+        summary=summary or f"Canvas: {title}",
+    )
+    pages_by_type = collect_pages_by_type(config)
+    write_index(config, pages_by_type)
+    write_overview(config, pages_by_type)
+    append_log_entry(config, "render", title, [f"Format: canvas", f"Canvas: {rel_canvas}", f"Page: {page.relative_path}"])
+    console.print(f"[green]Canvas created:[/green] {rel_canvas} → {page.relative_path}")
 
 
 def _resolve_raw_source(workspace_root: Path, source: str) -> Path:
