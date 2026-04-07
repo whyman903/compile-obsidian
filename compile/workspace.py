@@ -114,6 +114,11 @@ def list_wiki_pages(config: Config) -> list[str]:
     return [str(p.relative_to(config.wiki_dir)) for p in sorted(config.wiki_dir.rglob("*.md"))]
 
 
+def list_wiki_canvas_files(config: Config) -> list[str]:
+    """List ``.canvas`` files in the wiki directory."""
+    return [str(p.relative_to(config.wiki_dir)) for p in sorted(config.wiki_dir.rglob("*.canvas"))]
+
+
 # --- Page collection and navigation ---
 
 def collect_pages_by_type(config: Config) -> dict[str, list[dict[str, str]]]:

@@ -586,6 +586,8 @@ class ObsidianConnector:
         aliases: list[str] | None = None,
         summary: str | None = None,
         relative_path: str | None = None,
+        extra_frontmatter: dict[str, Any] | None = None,
+        ensure_title_heading: bool = True,
     ) -> VaultPage:
         self.scan()
 
@@ -648,8 +650,11 @@ class ObsidianConnector:
         if cssclasses:
             frontmatter["cssclasses"] = cssclasses
 
+        if extra_frontmatter:
+            frontmatter.update(extra_frontmatter)
+
         rendered_body = body.strip()
-        if not rendered_body.startswith("# "):
+        if ensure_title_heading and not rendered_body.startswith("# "):
             rendered_body = f"# {title}\n\n{rendered_body}"
 
         frontmatter_text = yaml.safe_dump(frontmatter, sort_keys=False, allow_unicode=False).strip()
@@ -657,6 +662,25 @@ class ObsidianConnector:
         target_path.write_text(f"---\n{frontmatter_text}\n---\n\n{rendered_body.rstrip()}\n")
         self._invalidate_cache()
         return self.get_page(str(target_path.relative_to(self.root)).replace("\\", "/"))
+
+    def write_canvas(self, title: str, canvas_json: str, relative_path: str | None = None) -> str:
+        """Write an Obsidian ``.canvas`` file.  Returns the relative path."""
+        from compile.text import slugify
+        if relative_path:
+            dest = self.root / relative_path
+        else:
+            slug = slugify(title) or "canvas"
+            dest = self.root / "wiki" / "outputs" / f"{slug}.canvas"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(canvas_json)
+        return str(dest.relative_to(self.root)).replace("\\", "/")
+
+    def write_asset(self, data: bytes, filename: str, subdir: str = "wiki/outputs") -> str:
+        """Write a binary asset file.  Returns the vault-relative path."""
+        dest = self.root / subdir / filename
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(data)
+        return str(dest.relative_to(self.root)).replace("\\", "/")
 
     def scan(self) -> list[VaultPage]:
         if self._pages is not None:
