@@ -10,10 +10,22 @@ import httpx
 from bs4 import BeautifulSoup
 from markdownify import markdownify as md
 
-from compile.text import slugify
+from compile.text import SUPPORTED_EXTENSIONS, slugify
 
 _USER_AGENT = "compile-wiki/0.2 (personal knowledge base builder)"
 _TIMEOUT = 30
+_HTML_CONTENT_TYPES = {"text/html", "application/xhtml+xml"}
+_CONTENT_TYPE_EXTENSIONS = {
+    "application/pdf": ".pdf",
+    "image/gif": ".gif",
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/svg+xml": ".svg",
+    "image/webp": ".webp",
+    "text/markdown": ".md",
+    "text/plain": ".txt",
+    "text/x-markdown": ".md",
+}
 
 
 def fetch_url(
@@ -33,6 +45,11 @@ def fetch_url(
         headers={"User-Agent": _USER_AGENT},
     )
     response.raise_for_status()
+
+    content_type = _normalize_content_type(response.headers.get("content-type", ""))
+    content_preview = response.content[:1024].decode(errors="ignore")
+    if not _is_html_response(url, content_type, content_preview):
+        return _save_supported_response(url, response, raw_dir, content_type)
 
     soup = BeautifulSoup(response.text, "html.parser")
     title = _extract_title(soup, url)
@@ -69,6 +86,35 @@ def fetch_url(
     return dest, title
 
 
+def _save_supported_response(
+    url: str,
+    response: httpx.Response,
+    raw_dir: Path,
+    content_type: str,
+) -> tuple[Path, str]:
+    """Persist a non-HTML response in a format supported by ``extract_text``."""
+    suffix = _suffix_for_response(url, content_type)
+    if suffix not in SUPPORTED_EXTENSIONS:
+        raise ValueError(
+            f"Unsupported remote content type: {content_type or 'unknown'}"
+        )
+
+    slug = slugify(Path(urlparse(url).path).stem or urlparse(url).netloc)
+    dest = _unique_path(raw_dir, slug, suffix)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    if suffix in {".md", ".markdown", ".txt"}:
+        text = response.text
+        if text and not text.endswith("\n"):
+            text += "\n"
+        dest.write_text(text)
+    else:
+        dest.write_bytes(response.content)
+
+    # Let ``extract_text`` derive a title from the saved artifact itself.
+    return dest, ""
+
+
 def _extract_title(soup: BeautifulSoup, url: str) -> str:
     """Pull a page title from OG tags, <title>, or <h1>."""
     og = soup.find("meta", property="og:title")
@@ -80,6 +126,46 @@ def _extract_title(soup: BeautifulSoup, url: str) -> str:
     if h1:
         return h1.get_text(strip=True)[:120]
     return urlparse(url).netloc
+
+
+def _normalize_content_type(content_type: str) -> str:
+    return content_type.lower().split(";", 1)[0].strip()
+
+
+def _is_html_response(url: str, content_type: str, content_preview: str) -> bool:
+    suffix = Path(urlparse(url).path).suffix.lower()
+    if content_type in _HTML_CONTENT_TYPES:
+        return True
+    if content_type in {"", "text/plain"} and _looks_like_html(content_preview):
+        return True
+    if suffix in {".html", ".htm"}:
+        return True
+    if not content_type and suffix in {"", ".php", ".asp", ".aspx", ".jsp"}:
+        return True
+    return False
+
+
+def _looks_like_html(content_preview: str) -> bool:
+    preview = content_preview.lstrip().lower()
+    return preview.startswith(("<!doctype html", "<html")) or any(
+        marker in preview for marker in ("<body", "<article", "<main")
+    )
+
+
+def _suffix_for_response(url: str, content_type: str) -> str:
+    suffix = Path(urlparse(url).path).suffix.lower()
+    if suffix in SUPPORTED_EXTENSIONS:
+        return suffix
+    return _CONTENT_TYPE_EXTENSIONS.get(content_type, "")
+
+
+def _unique_path(raw_dir: Path, slug: str, suffix: str) -> Path:
+    dest = raw_dir / f"{slug}{suffix}"
+    counter = 1
+    while dest.exists():
+        dest = raw_dir / f"{slug}-{counter}{suffix}"
+        counter += 1
+    return dest
 
 
 def _clean_markdown(text: str) -> str:
@@ -132,7 +218,7 @@ def _download_images(
             counter += 1
         dest.write_bytes(resp.content)
         # Rewrite the img src to local relative path
-        img["src"] = f"raw/assets/{dest.name}"
+        img["src"] = f"assets/{dest.name}"
 
 
 def _guess_extension(content_type: str) -> str:

@@ -116,14 +116,26 @@ def generate_canvas(
 
     If positions are omitted, nodes are laid out in a vertical stack.
     """
+    if not isinstance(nodes, list):
+        raise ValueError("nodes must be a JSON array of objects")
+    if edges is not None and not isinstance(edges, list):
+        raise ValueError("edges must be a JSON array of objects")
+
     canvas_nodes = []
+    node_ids: list[str] = []
     y_cursor = 0
     default_width = 300
     default_height = 120
     gap = 40
 
     for i, node in enumerate(nodes):
-        nid = node.get("id") or str(uuid.uuid4())[:8]
+        if not isinstance(node, dict):
+            raise ValueError(f"node {i} must be an object")
+        if "text" not in node and "file" not in node:
+            raise ValueError(f"node {i} must include either 'text' or 'file'")
+
+        raw_id = node.get("id")
+        nid = str(raw_id) if raw_id not in (None, "") else str(uuid.uuid4())[:8]
         x = node.get("x", 0)
         y = node.get("y", y_cursor)
         w = node.get("width", default_width)
@@ -148,24 +160,38 @@ def generate_canvas(
             entry["color"] = node["color"]
 
         canvas_nodes.append(entry)
+        node_ids.append(nid)
 
         # Advance cursor only when the node didn't provide explicit y
         if "y" not in node:
             y_cursor += h + gap
 
-        # Store the resolved id back so edges can reference it
-        node["id"] = nid
-
     canvas_edges = []
+    valid_ids = set(node_ids)
     for edge in edges or []:
+        if not isinstance(edge, dict):
+            raise ValueError("each edge must be an object")
+        if "from" not in edge or "to" not in edge:
+            raise ValueError("each edge must include 'from' and 'to'")
+
         eid = edge.get("id") or str(uuid.uuid4())[:8]
         from_ref = edge["from"]
         to_ref = edge["to"]
         # Support integer index references into the node list
         if isinstance(from_ref, int):
-            from_ref = canvas_nodes[from_ref]["id"]
+            if from_ref < 0 or from_ref >= len(node_ids):
+                raise ValueError(f"edge source index {from_ref} is out of range")
+            from_ref = node_ids[from_ref]
         if isinstance(to_ref, int):
-            to_ref = canvas_nodes[to_ref]["id"]
+            if to_ref < 0 or to_ref >= len(node_ids):
+                raise ValueError(f"edge target index {to_ref} is out of range")
+            to_ref = node_ids[to_ref]
+        from_ref = str(from_ref)
+        to_ref = str(to_ref)
+        if from_ref not in valid_ids:
+            raise ValueError(f"edge source '{from_ref}' does not match any node id")
+        if to_ref not in valid_ids:
+            raise ValueError(f"edge target '{to_ref}' does not match any node id")
         canvas_edges.append({
             "id": eid,
             "fromNode": from_ref,

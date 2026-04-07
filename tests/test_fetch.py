@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -73,6 +73,42 @@ class TestFetchUrl:
         )):
             with pytest.raises(httpx.HTTPStatusError):
                 fetch_url("https://x.com/missing", raw_dir)
+
+    def test_downloads_images_with_note_relative_paths(self, raw_dir: Path) -> None:
+        html = """
+        <html>
+        <head><title>Images</title></head>
+        <body><article><p>Hello</p><img src="/images/pic.png"></article></body>
+        </html>
+        """
+        html_response = _mock_response(html)
+        image_response = httpx.Response(
+            status_code=200,
+            content=b"pngdata",
+            headers={"content-type": "image/png"},
+            request=httpx.Request("GET", "https://example.com/images/pic.png"),
+        )
+        with patch("compile.fetch.httpx.get", side_effect=[html_response, image_response]):
+            path, _ = fetch_url("https://example.com/article", raw_dir, download_images=True)
+
+        content = path.read_text()
+        assert "![](assets/pic.png)" in content
+        assert (raw_dir / "assets" / "pic.png").exists()
+
+    def test_saves_pdf_urls_as_raw_artifacts(self, raw_dir: Path) -> None:
+        pdf_bytes = b"%PDF-1.7 fake content"
+        response = httpx.Response(
+            status_code=200,
+            content=pdf_bytes,
+            headers={"content-type": "application/pdf"},
+            request=httpx.Request("GET", "https://example.com/file.pdf"),
+        )
+        with patch("compile.fetch.httpx.get", return_value=response):
+            path, title = fetch_url("https://example.com/file.pdf", raw_dir)
+
+        assert path.suffix == ".pdf"
+        assert path.read_bytes() == pdf_bytes
+        assert title == ""
 
 
 class TestExtractTitle:

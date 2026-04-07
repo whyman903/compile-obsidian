@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
+from click.testing import CliRunner
 
+from compile.cli import main
 from compile.outputs import generate_canvas, generate_marp
+from compile.workspace import init_workspace
 
 
 class TestGenerateMarp:
@@ -89,3 +91,47 @@ class TestGenerateCanvas:
         assert result["edges"][0]["toNode"] == node_ids[1]
         assert result["edges"][1]["fromNode"] == node_ids[1]
         assert result["edges"][1]["toNode"] == node_ids[2]
+
+    def test_rejects_non_list_nodes(self) -> None:
+        with pytest.raises(ValueError, match="nodes must be a JSON array of objects"):
+            generate_canvas("Bad", {"text": "oops"})  # type: ignore[arg-type]
+
+    def test_rejects_out_of_range_edge_indices(self) -> None:
+        with pytest.raises(ValueError, match="edge target index 2 is out of range"):
+            generate_canvas("Bad", [{"text": "Only"}], [{"from": 0, "to": 2}])
+
+
+class TestRenderCommands:
+    def test_render_marp_preserves_leading_slide_separator(self, tmp_path) -> None:
+        init_workspace(tmp_path, "Test")
+        runner = CliRunner()
+
+        result = runner.invoke(
+            main,
+            ["render", "marp", "Deck", "--path", str(tmp_path), "--body", "---\n# Slide 1"],
+        )
+
+        assert result.exit_code == 0
+        content = (tmp_path / "wiki" / "outputs" / "Deck.md").read_text()
+        assert "\n# Deck\n" not in content
+        assert content.rstrip().endswith("---\n# Slide 1")
+
+    def test_render_canvas_rejects_invalid_payload_shape(self, tmp_path) -> None:
+        init_workspace(tmp_path, "Test")
+        runner = CliRunner()
+
+        result = runner.invoke(
+            main,
+            [
+                "render",
+                "canvas",
+                "Bad",
+                "--path",
+                str(tmp_path),
+                "--nodes",
+                '{"text":"not an array"}',
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert "Invalid canvas payload" in result.output

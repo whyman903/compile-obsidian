@@ -88,7 +88,7 @@ def ingest(source: str, path: str, title: str | None, images: bool) -> None:
         except Exception as exc:
             console.print(f"[red]Failed to fetch URL:[/red] {exc}")
             raise SystemExit(1)
-        if title is None:
+        if title is None and fetched_title:
             title = fetched_title
         console.print(f"[green]Fetched URL → [/green]{raw_path.relative_to(config.workspace_root)}")
     else:
@@ -383,6 +383,7 @@ def render_marp(title: str, path: str, body: str, theme: str, summary: str | Non
         summary=summary or f"Marp slide deck: {title}",
         tags=list(tags),
         extra_frontmatter=marp_fm,
+        ensure_title_heading=False,
     )
     pages_by_type = collect_pages_by_type(config)
     write_index(config, pages_by_type)
@@ -408,7 +409,7 @@ def render_chart(title: str, path: str, script: str, summary: str | None, tags: 
     except RuntimeError as exc:
         console.print(f"[red]Chart generation failed:[/red] {exc}")
         raise SystemExit(1)
-    rel_image = image_path.relative_to(config.workspace_root)
+    rel_image = str(image_path.relative_to(config.workspace_root)).replace("\\", "/")
     body = f"![[{rel_image}]]\n\n## Script\n\n```python\n{script}\n```\n"
     page = connector.upsert_page(
         title=title,
@@ -441,8 +442,11 @@ def render_canvas(title: str, path: str, nodes: str, edges: str | None, summary:
     except json.JSONDecodeError as exc:
         console.print(f"[red]Invalid JSON:[/red] {exc}")
         raise SystemExit(1)
-
-    canvas_json = generate_canvas(title, node_list, edge_list)
+    try:
+        canvas_json = generate_canvas(title, node_list, edge_list)
+    except ValueError as exc:
+        console.print(f"[red]Invalid canvas payload:[/red] {exc}")
+        raise SystemExit(1)
 
     # Write the .canvas file
     from compile.text import slugify
@@ -452,7 +456,7 @@ def render_canvas(title: str, path: str, nodes: str, edges: str | None, summary:
     canvas_path.write_text(canvas_json)
 
     # Create a companion markdown page
-    rel_canvas = canvas_path.relative_to(config.workspace_root)
+    rel_canvas = str(canvas_path.relative_to(config.workspace_root)).replace("\\", "/")
     body = f"Canvas file: [[{rel_canvas}]]\n\nNodes: {len(node_list)} | Edges: {len(edge_list)}\n"
     page = connector.upsert_page(
         title=title,

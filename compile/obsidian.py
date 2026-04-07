@@ -587,6 +587,7 @@ class ObsidianConnector:
         summary: str | None = None,
         relative_path: str | None = None,
         extra_frontmatter: dict[str, Any] | None = None,
+        ensure_title_heading: bool = True,
     ) -> VaultPage:
         self.scan()
 
@@ -653,7 +654,7 @@ class ObsidianConnector:
             frontmatter.update(extra_frontmatter)
 
         rendered_body = body.strip()
-        if not rendered_body.startswith("# "):
+        if ensure_title_heading and not rendered_body.startswith("# "):
             rendered_body = f"# {title}\n\n{rendered_body}"
 
         frontmatter_text = yaml.safe_dump(frontmatter, sort_keys=False, allow_unicode=False).strip()
