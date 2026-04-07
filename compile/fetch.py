@@ -49,6 +49,7 @@ def fetch_url(
 
     markdown_body = md(str(content_node), heading_style="ATX", strip=["img"] if not download_images else [])
     markdown_body = _clean_markdown(markdown_body)
+    markdown_body = _strip_duplicate_title(markdown_body, title)
 
     now = datetime.now(UTC).replace(microsecond=0).isoformat()
     provenance = f"<!-- source_url: {url} -->\n<!-- fetched: {now} -->\n\n"
@@ -87,6 +88,13 @@ def _clean_markdown(text: str) -> str:
     text = re.sub(r"\n{3,}", "\n\n", text)
     lines = [line.rstrip() for line in text.splitlines()]
     return "\n".join(lines).strip() + "\n"
+
+
+def _strip_duplicate_title(markdown_body: str, title: str) -> str:
+    """Remove a leading ``# Title`` line if it duplicates the title we prepend."""
+    import re
+    pattern = re.compile(r"^#\s+" + re.escape(title) + r"\s*\n+", re.IGNORECASE)
+    return pattern.sub("", markdown_body, count=1)
 
 
 def _download_images(

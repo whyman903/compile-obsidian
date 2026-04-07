@@ -14,20 +14,21 @@ from pathlib import Path
 # Marp slide decks
 # ---------------------------------------------------------------------------
 
-def generate_marp(title: str, body: str, *, theme: str = "default") -> str:
-    """Wrap *body* in Marp frontmatter.  Returns a complete markdown string.
+def generate_marp(title: str, body: str, *, theme: str = "default") -> tuple[str, dict]:
+    """Prepare Marp slide content.
+
+    Returns ``(body, extra_frontmatter)`` where *extra_frontmatter* contains
+    the Marp-specific keys (``marp``, ``theme``, ``paginate``) that should be
+    merged into the page's YAML frontmatter block.
 
     The caller is responsible for including ``---`` slide separators in *body*.
     """
-    header = (
-        f"---\n"
-        f"marp: true\n"
-        f"theme: {theme}\n"
-        f"paginate: true\n"
-        f"title: \"{title}\"\n"
-        f"---\n\n"
-    )
-    return header + body.rstrip() + "\n"
+    extra_fm = {
+        "marp": True,
+        "theme": theme,
+        "paginate": True,
+    }
+    return body.rstrip() + "\n", extra_fm
 
 
 # ---------------------------------------------------------------------------
@@ -158,10 +159,17 @@ def generate_canvas(
     canvas_edges = []
     for edge in edges or []:
         eid = edge.get("id") or str(uuid.uuid4())[:8]
+        from_ref = edge["from"]
+        to_ref = edge["to"]
+        # Support integer index references into the node list
+        if isinstance(from_ref, int):
+            from_ref = canvas_nodes[from_ref]["id"]
+        if isinstance(to_ref, int):
+            to_ref = canvas_nodes[to_ref]["id"]
         canvas_edges.append({
             "id": eid,
-            "fromNode": edge["from"],
-            "toNode": edge["to"],
+            "fromNode": from_ref,
+            "toNode": to_ref,
             "fromSide": edge.get("fromSide", "bottom"),
             "toSide": edge.get("toSide", "top"),
             **({"label": edge["label"]} if "label" in edge else {}),

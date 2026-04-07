@@ -111,7 +111,7 @@ def ingest(source: str, path: str, title: str | None, images: bool) -> None:
     ][:5]
 
     raw_relative = str(raw_path.relative_to(config.workspace_root)).replace("\\", "/")
-    summary = _source_summary_from_text(extracted_text)
+    summary = _source_summary_from_text(extracted_text, title=source_title)
     body = _build_source_body(raw_relative, summary, related_pages)
     page = connector.upsert_page(
         title=source_title,
@@ -372,15 +372,17 @@ def render() -> None:
 @click.option("--tag", "tags", multiple=True)
 def render_marp(title: str, path: str, body: str, theme: str, summary: str | None, tags: tuple[str, ...]) -> None:
     """Generate a Marp slide deck and save as a wiki output page."""
-    config = _load_workspace()
-    connector = ObsidianConnector(Path(path).resolve())
-    marp_body = generate_marp(title, body, theme=theme)
+    root = Path(path).resolve()
+    config = load_config(root)
+    connector = ObsidianConnector(root)
+    marp_body, marp_fm = generate_marp(title, body, theme=theme)
     page = connector.upsert_page(
         title=title,
         body=marp_body,
         page_type="output",
         summary=summary or f"Marp slide deck: {title}",
         tags=list(tags),
+        extra_frontmatter=marp_fm,
     )
     pages_by_type = collect_pages_by_type(config)
     write_index(config, pages_by_type)
@@ -397,8 +399,9 @@ def render_marp(title: str, path: str, body: str, theme: str, summary: str | Non
 @click.option("--tag", "tags", multiple=True)
 def render_chart(title: str, path: str, script: str, summary: str | None, tags: tuple[str, ...]) -> None:
     """Execute a matplotlib script and save the chart as a wiki output page."""
-    config = _load_workspace()
-    connector = ObsidianConnector(Path(path).resolve())
+    root = Path(path).resolve()
+    config = load_config(root)
+    connector = ObsidianConnector(root)
     output_dir = config.wiki_dir / "outputs"
     try:
         image_path = generate_chart(title, script, output_dir)
@@ -429,8 +432,9 @@ def render_chart(title: str, path: str, script: str, summary: str | None, tags: 
 @click.option("--summary", default=None, help="Frontmatter summary.")
 def render_canvas(title: str, path: str, nodes: str, edges: str | None, summary: str | None) -> None:
     """Generate an Obsidian Canvas file and a companion wiki output page."""
-    config = _load_workspace()
-    connector = ObsidianConnector(Path(path).resolve())
+    root = Path(path).resolve()
+    config = load_config(root)
+    connector = ObsidianConnector(root)
     try:
         node_list = json.loads(nodes)
         edge_list = json.loads(edges) if edges else []
@@ -476,8 +480,14 @@ def _resolve_raw_source(workspace_root: Path, source: str) -> Path:
     return raw_relative
 
 
-def _source_summary_from_text(text: str) -> str:
-    summary = re.sub(r"\s+", " ", text).strip()
+def _source_summary_from_text(text: str, title: str = "") -> str:
+    # Strip HTML comments (e.g. provenance markers from URL-fetched sources)
+    cleaned = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    # Strip leading markdown heading that matches the title
+    if title:
+        cleaned = re.sub(r"^#+\s+" + re.escape(title) + r"\s*", "", cleaned, flags=re.IGNORECASE)
+    summary = cleaned.strip()
     return summary[:220] or "Source scaffold created. Add a concise, source-backed summary."
 
 
