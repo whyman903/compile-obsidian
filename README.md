@@ -5,7 +5,13 @@ Compile is an LLM-maintained wiki for Obsidian. You curate sources and ask quest
 ## Install
 
 ```bash
-uv tool install .
+uv tool install compile
+```
+
+To update after pulling new changes:
+
+```bash
+uv tool install compile --force
 ```
 
 ## Quick Start
