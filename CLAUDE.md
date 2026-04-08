@@ -40,10 +40,10 @@ compile health --json-output          # machine-readable version for programmati
 ### Writing and maintenance
 
 ```bash
-compile ingest <source>               # create a source-note scaffold for a raw file, update nav
+compile ingest <source>               # create a source note for a raw file, update nav
 compile obsidian upsert "Title" \
   --page-type article \
-  --body "markdown content" \
+  --body-file /tmp/page.md \
   --tag "topic" --source "Source A"    # create or update any page with frontmatter
 compile obsidian refresh              # regenerate index.md and overview.md from current pages
 compile obsidian cleanup              # quarantine empty stub files created by Obsidian
@@ -62,12 +62,24 @@ compile schema                        # print the current WIKI.md schema
 When the user adds a source to `raw/` and asks you to process it:
 
 1. **Discover context first.** Run `compile obsidian search` with key terms from the source to find related existing pages.
-2. **Create the source scaffold.** Run `compile ingest <filename>` to create a source note with provenance. Then read the scaffold and improve it — add the main claims, key findings, limitations. The scaffold is a starting point, not the finished page.
+2. **Create the source note.** Run `compile ingest <filename>` to create a source note with provenance, key sections, and likely related pages. Then read the raw source and continue the maintenance flow yourself: strengthen the source note where it still needs deeper synthesis or caveats, and update related articles in the same pass.
 3. **Update existing articles.** If the source adds evidence to existing articles, update those articles — don't spawn new ones. Run `compile obsidian page "Title"` to read the current content before editing.
 4. **Create new articles only when warranted.** A new article is justified when: the topic recurs across sources, it's central enough for standalone navigation, or an existing page would lose focus.
 5. **Refresh navigation.** Run `compile obsidian refresh` to update index and overview.
 6. **Append to the log.** Record what was processed, what pages were created or updated.
 7. **Check quality.** Run `compile health` and fix any issues before finishing.
+
+### PDF sources
+
+PDF content cannot be extracted by the CLI — `compile ingest` creates a registration shell with provenance only. You must read the PDF directly and replace the shell with a proper source note via `compile obsidian upsert --body-file`. If the filename produces an ugly title, pass `--title "Proper Title"` to `compile ingest`.
+
+### Batch ingest of related sources
+
+When processing multiple related sources (e.g., readings for an exam):
+
+1. **Read all sources before writing any notes.** Understanding the full set lets you identify cross-references and tensions that make individual notes richer.
+2. **Run `compile ingest` for each source** to register provenance, then write enriched source notes in parallel.
+3. **Run `compile obsidian refresh` and `compile health` once at the end**, not after each page. Intermediate states don't matter.
 
 ## Query Workflow
 
@@ -76,7 +88,7 @@ When the user asks a question against the wiki:
 1. **Start from the index.** Run `compile obsidian search "query"` or read `wiki/index.md` to find relevant pages.
 2. **Read wiki pages first**, not raw files. The wiki is the synthesized layer.
 3. **Pull raw sources only when needed** — when the wiki is insufficient or you need to verify a specific claim.
-4. **File durable answers back.** If the answer would be useful later, save it as a page in `wiki/outputs/` using `compile obsidian upsert`. This is how queries compound into the knowledge base.
+4. **File durable answers back.** If the answer would be useful later, save it as a page in `wiki/outputs/` using `compile obsidian upsert --body-file ...`. Then run `compile obsidian refresh` and `compile health`. This is how queries compound into the knowledge base.
 
 ## Lint Workflow
 
@@ -102,8 +114,8 @@ title: "Page Title"
 type: article          # article, source, map, output, index, overview, log
 status: seed           # seed, emerging, stable
 summary: "One-line description for index and overview."
-created: 2026-04-07T00:00:00+00:00
-updated: 2026-04-07T00:00:00+00:00
+created: 2026-04-07 00:00
+updated: 2026-04-07 00:00
 ```
 
 Optional when relevant: `tags`, `aliases`, `sources`, `source_ids`, `cssclasses`.

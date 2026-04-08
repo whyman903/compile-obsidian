@@ -10,9 +10,10 @@ from rich.table import Table
 
 from compile.config import load_config
 from compile.fetch import fetch_url
+from compile.ingest import build_ingest_artifact, render_source_body
 from compile.obsidian import ObsidianConnector
 from compile.outputs import generate_canvas, generate_chart, generate_marp
-from compile.text import extract_text, is_url
+from compile.text import extract_source, is_url
 from compile.workspace import (
     append_log_entry,
     collect_pages_by_type,
@@ -77,7 +78,7 @@ def status() -> None:
 @click.option("--title", default=None, help="Optional override title for the generated source note.")
 @click.option("--images/--no-images", default=False, help="Download referenced images when ingesting a URL.")
 def ingest(source: str, path: str, title: str | None, images: bool) -> None:
-    """Create a minimal source-note scaffold for a raw artifact or URL."""
+    """Create a source note for a raw artifact or URL."""
     config = load_config(Path(path).resolve())
 
     if is_url(source):
@@ -102,26 +103,40 @@ def ingest(source: str, path: str, title: str | None, images: bool) -> None:
             console.print("[red]Raw source must live inside the workspace root.[/red]")
             raise SystemExit(1)
 
-    extracted_title, extracted_text = extract_text(raw_path)
-    source_title = title or extracted_title
     connector = ObsidianConnector(config.workspace_root)
-    related_pages = [
-        hit.title for hit in connector.search(source_title, limit=8)
-        if hit.page_type not in {"source", "index", "overview", "log"} and hit.title != source_title
-    ][:5]
-
     raw_relative = str(raw_path.relative_to(config.workspace_root)).replace("\\", "/")
-    summary = _source_summary_from_text(extracted_text, title=source_title)
-    body = _build_source_body(raw_relative, summary, related_pages)
+    extracted = extract_source(raw_path)
+    effective_title = title or extracted.title
+
+    # Guard against re-clobbering an enriched source note.
+    # If a source page already exists for this title and has been enriched
+    # beyond the registration shell, skip the overwrite and mark it processed.
+    try:
+        existing = connector.get_page(effective_title)
+        if existing.page_type == "source" and "This is a registration shell." not in existing.body:
+            mark_processed(config, raw_path, [existing.relative_path])
+            console.print(f"[yellow]Source already enriched:[/yellow] {existing.relative_path}")
+            console.print("  Marked as processed. Skipping re-ingest.")
+            return
+    except (FileNotFoundError, ValueError):
+        pass
+
+    artifact = build_ingest_artifact(
+        raw_relative=raw_relative,
+        extracted=extracted,
+        connector=connector,
+        title=effective_title,
+    )
     page = connector.upsert_page(
-        title=source_title,
-        body=body,
+        title=artifact.title,
+        body=render_source_body(artifact),
         page_type="source",
-        summary=summary,
+        summary=artifact.page_summary,
         sources=[raw_relative],
     )
 
-    mark_processed(config, raw_path, [page.relative_path])
+    if not artifact.metadata_only:
+        mark_processed(config, raw_path, [page.relative_path])
     pages_by_type = collect_pages_by_type(config)
     write_index(config, pages_by_type)
     write_overview(config, pages_by_type)
@@ -129,15 +144,17 @@ def ingest(source: str, path: str, title: str | None, images: bool) -> None:
         f"Raw source: {raw_relative}",
         f"Source page: {page.relative_path}",
     ]
-    if related_pages:
-        log_lines.extend(f"Review related page: {page_title}" for page_title in related_pages)
-    append_log_entry(config, "ingest", source_title, log_lines)
+    if artifact.related_pages:
+        log_lines.extend(f"Review related page: {related_page.title}" for related_page in artifact.related_pages)
+    append_log_entry(config, "ingest", artifact.title, log_lines)
 
-    console.print(f"[green]Ingest scaffold created:[/green] {page.relative_path}")
-    if related_pages:
+    console.print(f"[green]Source note created:[/green] {page.relative_path}")
+    if artifact.metadata_only:
+        console.print("  Source content could not be extracted. Read the raw file and replace this note.")
+    if artifact.related_pages:
         console.print("  Review these existing pages next:")
-        for page_title in related_pages:
-            console.print(f"  - {page_title}")
+        for related_page in artifact.related_pages:
+            console.print(f"  - {related_page.title}")
 
 
 @main.command("health")
@@ -324,7 +341,13 @@ def obsidian_refresh(path: str) -> None:
 @click.argument("title")
 @click.option("--path", "-p", default=".")
 @click.option("--page-type", required=True, help="Page type, for example article, source, map, or output.")
-@click.option("--body", default="", help="Markdown body for the page.")
+@click.option("--body", default=None, help="Markdown body for the page.")
+@click.option(
+    "--body-file",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Read markdown body from a UTF-8 file.",
+)
 @click.option("--summary", default=None, help="Optional frontmatter summary.")
 @click.option("--relative-path", default=None, help="Optional target path relative to the vault root.")
 @click.option("--tag", "tags", multiple=True, help="Repeat to add tags.")
@@ -334,7 +357,8 @@ def obsidian_upsert(
     title: str,
     path: str,
     page_type: str,
-    body: str,
+    body: str | None,
+    body_file: Path | None,
     summary: str | None,
     relative_path: str | None,
     tags: tuple[str, ...],
@@ -342,10 +366,38 @@ def obsidian_upsert(
     aliases: tuple[str, ...],
 ) -> None:
     """Create or update a maintained page."""
-    connector = ObsidianConnector(Path(path).resolve())
+    if body is not None and body_file is not None:
+        console.print("[red]Use either --body or --body-file, not both.[/red]")
+        raise SystemExit(1)
+
+    if body_file is not None:
+        try:
+            body_text = body_file.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            console.print(f"[red]Failed to read body file as UTF-8:[/red] {body_file}")
+            raise SystemExit(1)
+        except OSError as exc:
+            console.print(f"[red]Failed to read body file:[/red] {exc}")
+            raise SystemExit(1)
+    else:
+        body_text = body or ""
+
+    root = Path(path).resolve()
+    connector = ObsidianConnector(root)
+
+    # Capture whether the existing page is a registration shell before upserting.
+    existing_was_shell = False
+    if page_type == "source":
+        try:
+            existing = connector.get_page(title)
+            if existing.page_type == "source" and "This is a registration shell." in existing.body:
+                existing_was_shell = True
+        except (FileNotFoundError, ValueError):
+            pass
+
     page = connector.upsert_page(
         title=title,
-        body=body or "",
+        body=body_text,
         page_type=page_type,
         tags=list(tags),
         sources=list(sources),
@@ -353,6 +405,20 @@ def obsidian_upsert(
         summary=summary,
         relative_path=relative_path,
     )
+
+    # When a registration shell is replaced with real content, mark raw sources processed.
+    if existing_was_shell and "This is a registration shell." not in body_text:
+        try:
+            config = load_config(root)
+            raw_sources = page.frontmatter.get("sources", [])
+            for raw_rel in raw_sources:
+                raw_path = root / raw_rel
+                if raw_path.exists():
+                    mark_processed(config, raw_path, [page.relative_path])
+                    console.print(f"[green]Marked processed:[/green] {raw_rel}")
+        except Exception:
+            pass  # non-fatal: source tracking is best-effort
+
     console.print(f"[green]Upserted[/green] {page.relative_path}")
 
 
@@ -600,34 +666,13 @@ def _resolve_raw_source(workspace_root: Path, source: str) -> Path:
 
 
 def _source_summary_from_text(text: str, title: str = "") -> str:
-    # Strip HTML comments (e.g. provenance markers from URL-fetched sources)
+    """Compatibility helper for concise one-line source summaries."""
     cleaned = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
-    # Strip leading markdown heading that matches the title
     if title:
         cleaned = re.sub(r"^#+\s+" + re.escape(title) + r"\s*", "", cleaned, flags=re.IGNORECASE)
     summary = cleaned.strip()
-    return summary[:220] or "Source scaffold created. Add a concise, source-backed summary."
-
-
-def _build_source_body(raw_relative: str, summary: str, related_pages: list[str]) -> str:
-    lines = [
-        "## Synopsis",
-        "",
-        summary,
-        "",
-        "## Provenance",
-        "",
-        f"- Source file: ![[{raw_relative}]]",
-    ]
-    if related_pages:
-        lines.extend([
-            "",
-            "## Likely Related Pages",
-            "",
-            *[f"- [[{page_title}]]" for page_title in related_pages],
-        ])
-    return "\n".join(lines)
+    return summary[:220] or "Minimal source content; no substantive summary available."
 
 
 if __name__ == "__main__":

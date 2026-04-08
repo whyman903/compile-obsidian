@@ -1,6 +1,6 @@
 # Compile
 
-Compile is an LLM-maintained wiki for Obsidian. You curate sources and ask questions; Claude does all the writing, cross-referencing, and maintenance.
+Compile is an LLM-maintained wiki for Obsidian. You curate sources and ask questions; Claude does the writing, cross-referencing, and maintenance through a disciplined CLI workflow.
 
 ## Install
 
@@ -26,7 +26,7 @@ This installs slash commands (`/capture`, `/wiki-query`, `/wiki-context`) that m
 
 3. **Open the workspace in Obsidian** — it's already configured as a vault.
 
-4. **Start working with Claude.** Drop sources into `raw/`, then use `/ingest` to process them. Ask questions with `/wiki-query`. Claude reads, writes, and maintains the wiki — you guide it.
+4. **Start working with Claude.** Drop sources into `raw/`, then use `/ingest` to process them. Ask questions with `/wiki-query`. For substantial page writes, prefer file-backed edits with `compile obsidian upsert --body-file ...`, then run `compile obsidian refresh` and `compile health`.
 
 ## How It Works
 
@@ -40,9 +40,16 @@ The wiki compounds over time. Every source processed and every question answered
 
 ## What Claude Does
 
-- **Ingest**: reads a source, writes a summary, updates the index, revises related articles, logs what changed.
+- **Ingest**: registers a source, writes a source note with provenance, and updates the index. Claude then reads the raw source, strengthens the note, and updates related articles.
 - **Query**: searches the wiki, synthesizes an answer, and files durable answers back as new pages.
 - **Lint**: audits for broken links, stale claims, missing cross-references, orphan pages, and contradictions.
+
+## Workflow Notes
+
+- Prefer `compile obsidian upsert --body-file ...` for multi-paragraph or web-sourced content. It is safer than large shell heredocs.
+- After creating or updating multiple pages, run `compile obsidian refresh` and then `compile health`.
+- New output pages may briefly show low-severity navigation bottleneck warnings until they are linked from articles or maps.
+- Treat model-processed web extracts as working notes, not verified quotations. For quote-sensitive workflows, verify against the raw source.
 
 ## Page Types
 

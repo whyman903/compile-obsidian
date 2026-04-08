@@ -118,7 +118,7 @@ class TestAuditVaultContent:
         (tmp_path / "wiki" / "articles" / "broken.md").write_text(
             "---\ntitle: Broken\ntype: article\nstatus: seed\n"
             "summary: 'Words followed  by double space.'\n"
-            "updated: 2026-01-01T00:00:00+00:00\n---\n\n"
+            "updated: 2026-01-01 00:00\n---\n\n"
             "# Broken\n\nEnough body text here.\n\nAnother paragraph.\n"
         )
         _refresh(tmp_path)

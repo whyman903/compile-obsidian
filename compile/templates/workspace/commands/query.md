@@ -15,6 +15,7 @@ Workflow:
 5. Present the answer to the user.
 
 6. Ask: "Want me to save this as a wiki output page?" If yes:
-   - Use `compile obsidian upsert "Answer Title" --page-type output` with the answer content
+   - Write the answer to a temporary markdown file and use `compile obsidian upsert "Answer Title" --page-type output --body-file /tmp/answer.md`
    - Run `compile obsidian refresh` to update navigation
+   - Run `compile health` to catch unresolved links or navigation issues
    - Append to log

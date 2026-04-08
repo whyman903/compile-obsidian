@@ -30,7 +30,7 @@ class TestSourceSummary:
     def test_empty_after_stripping(self) -> None:
         text = "<!-- comment -->"
         result = _source_summary_from_text(text)
-        assert result == "Source scaffold created. Add a concise, source-backed summary."
+        assert result == "Minimal source content; no substantive summary available."
 
     def test_truncation(self) -> None:
         text = "A" * 300

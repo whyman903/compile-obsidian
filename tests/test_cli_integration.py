@@ -14,7 +14,7 @@ def _write_page(path: Path, title: str, page_type: str, body: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         f"---\ntitle: {title}\ntype: {page_type}\nstatus: seed\n"
-        f"summary: 'Test page.'\nupdated: 2026-01-01T00:00:00+00:00\n---\n\n"
+        f"summary: 'Test page.'\nupdated: 2026-01-01 00:00\n---\n\n"
         f"# {title}\n\n{body}\n"
     )
 
@@ -72,13 +72,14 @@ class TestIngestCommand:
         result = runner.invoke(main, ["ingest", "article.md", "--path", str(tmp_path)])
 
         assert result.exit_code == 0
-        assert "scaffold created" in result.output.lower()
+        assert "source note created" in result.output.lower()
 
         # Source page should exist
         source_path = tmp_path / "wiki" / "sources" / "My Article.md"
         assert source_path.exists()
         source_text = source_path.read_text()
         assert "type: source" in source_text
+        assert "## Synopsis" in source_text
 
     def test_ingest_with_title_override(self, tmp_path: Path) -> None:
         init_workspace(tmp_path, "Test")
@@ -93,6 +94,28 @@ class TestIngestCommand:
         assert result.exit_code == 0
         source_path = tmp_path / "wiki" / "sources" / "Custom Title.md"
         assert source_path.exists()
+
+    def test_ingest_title_override_does_not_overwrite_existing_article(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        _write_page(
+            tmp_path / "wiki" / "articles" / "friendship.md",
+            "Friendship",
+            "article",
+            "A durable article that should remain an article.",
+        )
+        raw_file = tmp_path / "raw" / "notes.md"
+        raw_file.write_text("# Misc Notes\n\nReciprocal goodwill matters here.")
+
+        runner = CliRunner()
+        result = runner.invoke(main, [
+            "ingest", "notes.md", "--path", str(tmp_path), "--title", "Friendship",
+        ])
+
+        assert result.exit_code == 0
+        article_text = (tmp_path / "wiki" / "articles" / "friendship.md").read_text()
+        source_text = (tmp_path / "wiki" / "sources" / "Friendship.md").read_text()
+        assert "type: article" in article_text
+        assert "type: source" in source_text
 
     def test_ingest_missing_file(self, tmp_path: Path) -> None:
         init_workspace(tmp_path, "Test")
@@ -133,6 +156,160 @@ class TestIngestCommand:
         runner = CliRunner()
         result = runner.invoke(main, ["ingest", "paper.pdf", "--path", str(tmp_path)])
         assert result.exit_code == 0
+        source_text = (tmp_path / "wiki" / "sources" / "Paper.md").read_text()
+        assert "PDF source named Paper." in source_text
+        assert "## Key Sections" not in source_text
+
+    def test_ingest_builds_stronger_source_note_and_related_context(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        _write_page(
+            tmp_path / "wiki" / "articles" / "friendship.md",
+            "Friendship",
+            "article",
+            "A durable synthesis of reciprocal goodwill and social trust.",
+        )
+        raw_file = tmp_path / "raw" / "friendship-source.md"
+        raw_file.write_text(
+            "# Friendship Source\n\n"
+            "This source explains how friendship relies on reciprocal goodwill and social trust in durable communities. "
+            "It frames the topic as a practical relationship rather than a purely abstract virtue.\n\n"
+            "## Friendship\n\n"
+            "A second paragraph expands on the maintenance of friendship through repeated practice, accountability, "
+            "and shared obligations over time.\n"
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["ingest", "friendship-source.md", "--path", str(tmp_path)])
+
+        assert result.exit_code == 0
+        source_text = (tmp_path / "wiki" / "sources" / "Friendship Source.md").read_text()
+        assert "## Key Sections" in source_text
+        assert "- Friendship" in source_text
+        assert "## Likely Related Pages" in source_text
+        assert "[[Friendship]]" in source_text
+        assert "Reason:" in source_text
+        assert "## Integration Notes" in source_text
+        assert "Review [[Friendship]] before creating a new article on this topic." in source_text
+        assert "A second paragraph expands" in source_text
+
+    def test_ingest_omits_noisy_related_sections_when_no_good_matches(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        raw_file = tmp_path / "raw" / "isolated.md"
+        raw_file.write_text(
+            "# Isolated Source\n\n"
+            "A source about an entirely novel niche topic with no overlap to existing pages in this workspace.\n"
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["ingest", "isolated.md", "--path", str(tmp_path)])
+
+        assert result.exit_code == 0
+        source_text = (tmp_path / "wiki" / "sources" / "Isolated Source.md").read_text()
+        assert "## Likely Related Pages" not in source_text
+        assert "## Integration Notes" not in source_text
+
+    def test_ingest_strips_provenance_comments_from_synopsis(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        raw_file = tmp_path / "raw" / "fetched.md"
+        raw_file.write_text(
+            "<!-- source_url: https://example.com/article -->\n"
+            "<!-- fetched: 2026-04-07T00:00:00+00:00 -->\n\n"
+            "# Fetched Article\n\n"
+            "This is the first real paragraph from the fetched article.\n\n"
+            "This is the second paragraph with more durable detail.\n"
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["ingest", "fetched.md", "--path", str(tmp_path)])
+
+        assert result.exit_code == 0
+        source_text = (tmp_path / "wiki" / "sources" / "Fetched Article.md").read_text()
+        assert "source_url" not in source_text
+        assert "fetched:" not in source_text
+
+    def test_ingest_empty_file_uses_default_summary_instead_of_provenance(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        raw_file = tmp_path / "raw" / "empty.md"
+        raw_file.write_text("")
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["ingest", "empty.md", "--path", str(tmp_path)])
+
+        assert result.exit_code == 0
+        source_text = (tmp_path / "wiki" / "sources" / "Empty.md").read_text()
+        assert "Minimal source content; no substantive summary available." in source_text
+        assert "summary: '- Source file:" not in source_text
+
+    def test_ingest_uses_override_title_for_related_matching(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        _write_page(
+            tmp_path / "wiki" / "articles" / "friendship.md",
+            "Friendship",
+            "article",
+            "A durable synthesis of reciprocal goodwill and social trust.",
+        )
+        raw_file = tmp_path / "raw" / "notes.md"
+        raw_file.write_text("# Misc Notes\n\nShort unrelated text.")
+
+        runner = CliRunner()
+        result = runner.invoke(main, [
+            "ingest", "notes.md", "--path", str(tmp_path), "--title", "Friendship Research",
+        ])
+
+        assert result.exit_code == 0
+        source_text = (tmp_path / "wiki" / "sources" / "Friendship Research.md").read_text()
+        assert "## Likely Related Pages" in source_text
+        assert "[[Friendship]]" in source_text
+
+    def test_ingest_surfaces_content_based_related_matches(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        _write_page(
+            tmp_path / "wiki" / "articles" / "supervised-learning.md",
+            "Supervised Learning",
+            "article",
+            "Learning from labeled examples and training data.",
+        )
+        raw_file = tmp_path / "raw" / "ml.md"
+        raw_file.write_text(
+            "# ML Notes\n\n"
+            "This source explains how models learn from labeled examples during training and evaluation. "
+            "It compares classifiers and held-out validation.\n"
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["ingest", "ml.md", "--path", str(tmp_path)])
+
+        assert result.exit_code == 0
+        source_text = (tmp_path / "wiki" / "sources" / "ML Notes.md").read_text()
+        assert "## Likely Related Pages" in source_text
+        assert "[[Supervised Learning]]" in source_text
+
+
+    def test_ingest_skips_enriched_source_and_marks_processed(self, tmp_path: Path) -> None:
+        """Re-ingesting a PDF whose source note was already enriched should not clobber it."""
+        init_workspace(tmp_path, "Test")
+        raw_file = tmp_path / "raw" / "paper.pdf"
+        raw_file.write_bytes(b"%PDF-1.4 fake")  # simulates unextractable PDF
+
+        runner = CliRunner()
+        # First ingest: creates a registration shell
+        result = runner.invoke(main, ["ingest", "paper.pdf", "--path", str(tmp_path)])
+        assert result.exit_code == 0
+        source_path = tmp_path / "wiki" / "sources" / "Paper.md"
+        assert "This is a registration shell." in source_path.read_text()
+
+        # Simulate Claude enriching the source note
+        enriched_body = "---\ntitle: Paper\ntype: source\nstatus: seed\nsummary: 'A real paper.'\n---\n\n# Paper\n\n## Synopsis\n\nReal enriched content here.\n"
+        source_path.write_text(enriched_body)
+
+        # Second ingest: should skip and mark processed, not overwrite
+        result = runner.invoke(main, ["ingest", "paper.pdf", "--path", str(tmp_path)])
+        assert result.exit_code == 0
+        assert "Source already enriched" in result.output
+        assert "Marked as processed" in result.output
+        # Enriched content should be preserved
+        assert "Real enriched content here." in source_path.read_text()
+        assert "This is a registration shell." not in source_path.read_text()
 
 
 class TestObsidianInspectCommand:
@@ -247,6 +424,32 @@ class TestObsidianUpsertCommand:
 
         assert result.exit_code == 0
         assert (tmp_path / "wiki" / "sources" / "My Source.md").exists()
+
+    def test_upsert_enriching_shell_marks_processed(self, tmp_path: Path) -> None:
+        """compile obsidian upsert replacing a registration shell should mark the raw source processed."""
+        from compile.config import load_config
+        from compile.workspace import get_unprocessed
+        init_workspace(tmp_path, "Test")
+        raw_file = tmp_path / "raw" / "paper.pdf"
+        raw_file.write_bytes(b"%PDF-1.4 fake")
+
+        runner = CliRunner()
+        # Ingest creates a registration shell (metadata-only, not marked processed)
+        result = runner.invoke(main, ["ingest", "paper.pdf", "--path", str(tmp_path)])
+        assert result.exit_code == 0
+        config = load_config(tmp_path)
+        assert len(get_unprocessed(config)) == 1
+
+        # Enrich via upsert (the documented PDF workflow)
+        result = runner.invoke(main, [
+            "obsidian", "upsert", "Paper",
+            "--page-type", "source",
+            "--body", "## Synopsis\n\nReal enriched content from reading the PDF.",
+            "--path", str(tmp_path),
+        ])
+        assert result.exit_code == 0
+        assert "Marked processed" in result.output
+        assert len(get_unprocessed(config)) == 0
 
     def test_create_map(self, tmp_path: Path) -> None:
         init_workspace(tmp_path, "Test")

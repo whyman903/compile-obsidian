@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -10,6 +9,7 @@ import httpx
 from bs4 import BeautifulSoup
 from markdownify import markdownify as md
 
+from compile.dates import now_machine
 from compile.text import SUPPORTED_EXTENSIONS, slugify
 
 _USER_AGENT = "compile-wiki/0.2 (personal knowledge base builder)"
@@ -68,7 +68,7 @@ def fetch_url(
     markdown_body = _clean_markdown(markdown_body)
     markdown_body = _strip_duplicate_title(markdown_body, title)
 
-    now = datetime.now(UTC).replace(microsecond=0).isoformat()
+    now = now_machine()
     provenance = f"<!-- source_url: {url} -->\n<!-- fetched: {now} -->\n\n"
     full_content = provenance + f"# {title}\n\n" + markdown_body
 

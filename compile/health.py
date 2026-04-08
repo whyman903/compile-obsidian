@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from hashlib import sha1
 import json
 from pathlib import Path
 from typing import Any
 
+from compile.dates import now_machine
 from compile.obsidian import ObsidianConnector, VaultIssue
 from compile.verify import audit_vault_content
 
@@ -125,7 +125,7 @@ def build_health_report(
     graph_status = _status_from_counts(graph_counts)
     content_status = _status_from_counts(content_counts)
 
-    generated_at = datetime.now(UTC).replace(microsecond=0).isoformat()
+    generated_at = now_machine()
     workspace_id = _workspace_id(root)
     overall_status = (
         "not_obsidian_ready"

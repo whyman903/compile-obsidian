@@ -10,6 +10,7 @@ from typing import Any
 
 import yaml
 
+from compile.dates import format_machine_datetime, now_frontmatter
 from compile.markdown import LINE_RE, WORD_RE, extract_wikilinks, parse_markdown_file
 from compile.page_types import ARTICLE_PAGE_TYPES, CONTENT_PAGE_TYPES, NAV_PAGE_TYPES
 
@@ -71,7 +72,7 @@ def _json_safe(value: Any) -> Any:
     if isinstance(value, tuple):
         return [_json_safe(item) for item in value]
     if isinstance(value, (date, datetime)):
-        return value.isoformat()
+        return format_machine_datetime(value)
     if isinstance(value, Path):
         return str(value)
     return value
@@ -258,6 +259,7 @@ class SearchHit:
     title: str
     relative_path: str
     page_type: str
+    summary: str
     score: int
     reasons: list[str]
     snippet: str
@@ -267,6 +269,7 @@ class SearchHit:
             "title": self.title,
             "relative_path": self.relative_path,
             "page_type": self.page_type,
+            "summary": self.summary,
             "score": self.score,
             "reasons": self.reasons,
             "snippet": self.snippet,
@@ -528,6 +531,7 @@ class ObsidianConnector:
                     title=page.title,
                     relative_path=page.relative_path,
                     page_type=page.page_type,
+                    summary=str(page.frontmatter.get("summary", "")).strip(),
                     score=score,
                     reasons=reasons,
                     snippet=self._snippet_for_page(page, query_terms),
@@ -599,8 +603,12 @@ class ObsidianConnector:
                 existing_page = None
         else:
             lookup = self._page_by_locator.get(_normalize_key(title), [])
-            if len(lookup) == 1:
-                existing_page = lookup[0]
+            matching_type = [page for page in lookup if page.page_type == page_type]
+            if len(matching_type) == 1:
+                existing_page = matching_type[0]
+            elif len(matching_type) > 1:
+                matches = ", ".join(page.relative_path for page in matching_type[:4])
+                raise ValueError(f"Ambiguous page title '{title}'. Matches: {matches}")
             elif len(lookup) > 1:
                 matches = ", ".join(page.relative_path for page in lookup[:4])
                 raise ValueError(f"Ambiguous page title '{title}'. Matches: {matches}")
@@ -615,7 +623,7 @@ class ObsidianConnector:
         if existing_page is not None:
             frontmatter = dict(existing_page.frontmatter)
 
-        now = datetime.now().astimezone().replace(microsecond=0).isoformat()
+        now = now_frontmatter()
         created = str(frontmatter.get("created") or frontmatter.get("created_at") or now)
         effective_summary = (summary or str(frontmatter.get("summary", "")).strip() or self._summarize_body(body)).strip()
 
@@ -923,6 +931,8 @@ class ObsidianConnector:
         title_key = _normalize_key(page.title)
         path_key = _normalize_key(page.relative_path)
         body_lower = page.body.lower()
+        summary = str(page.frontmatter.get("summary", "")).strip()
+        summary_lower = summary.lower()
         tags_lower = [tag.lower() for tag in page.tags]
         aliases_lower = [_normalize_key(alias) for alias in page.aliases]
 
@@ -944,10 +954,15 @@ class ObsidianConnector:
             score += 45
             reasons.append("path-match")
 
+        if query_key and summary and query_key in _normalize_key(summary):
+            score += 35
+            reasons.append("summary-match")
+
         if query_terms:
             title_terms = set(_search_terms(page.title))
             alias_terms = set(_search_terms(" ".join(page.aliases)))
             tag_terms = set(_search_terms(" ".join(page.tags)))
+            summary_terms = set(_search_terms(summary))
             body_terms = _search_terms(page.body)
             body_term_set = set(body_terms)
             overlap = set(query_terms) & title_terms
@@ -962,11 +977,15 @@ class ObsidianConnector:
             if tag_overlap:
                 score += 8 * len(tag_overlap)
                 reasons.append("tag-match")
+            summary_overlap = set(query_terms) & summary_terms
+            if summary_overlap:
+                score += 6 * len(summary_overlap)
+                reasons.append("summary-terms")
             body_overlap = set(query_terms) & body_term_set
             if body_overlap:
                 score += 4 * len(body_overlap)
                 reasons.append("body-match")
-            if all(term in body_lower for term in query_terms):
+            if all(term in f"{summary_lower} {body_lower}" for term in query_terms):
                 score += 12
                 reasons.append("all-terms")
 

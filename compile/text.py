@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 import re
 
 from bs4 import BeautifulSoup
+
+from compile.markdown import parse_markdown_text
 
 
 SUPPORTED_EXTENSIONS = {
@@ -20,6 +23,18 @@ SUPPORTED_EXTENSIONS = {
     ".gif",
 }
 
+HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+(.*?)\s*$")
+HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+
+
+@dataclass(frozen=True)
+class ExtractedSource:
+    title: str
+    normalized_text: str
+    paragraphs: tuple[str, ...]
+    headings: tuple[str, ...]
+    metadata_only: bool
+
 
 def slugify(value: str) -> str:
     normalized = re.sub(r"[^a-zA-Z0-9]+", "-", value.lower()).strip("-")
@@ -28,6 +43,24 @@ def slugify(value: str) -> str:
 
 def normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
+
+
+def _split_camel_case(value: str) -> str:
+    """Insert spaces into camelCase or PascalCase runs.
+
+    'SingerAllAnimalsAreEqual' -> 'Singer All Animals Are Equal'
+    'HTMLParser' -> 'HTML Parser'
+    """
+    value = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", value)
+    value = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", value)
+    return value
+
+
+def _title_from_stem(stem: str) -> str:
+    """Derive a human-readable title from a filename stem."""
+    name = stem.replace("-", " ").replace("_", " ").strip()
+    name = _split_camel_case(name)
+    return normalize_text(name).title()
 
 
 def fix_pdf_artifacts(text: str) -> str:
@@ -68,6 +101,12 @@ def is_equation_heavy(text: str) -> bool:
 
 def extract_text(path: Path) -> tuple[str, str]:
     """Extract text from a file. Returns (title, text)."""
+    extracted = extract_source(path)
+    return extracted.title, extracted.normalized_text
+
+
+def extract_source(path: Path) -> ExtractedSource:
+    """Extract structured source details from a file."""
     suffix = path.suffix.lower()
     if suffix == ".pdf":
         return _extract_pdf(path)
@@ -80,39 +119,77 @@ def extract_text(path: Path) -> tuple[str, str]:
     raise ValueError(f"Unsupported file type: {suffix}")
 
 
-def _extract_pdf(path: Path) -> tuple[str, str]:
-    title = path.stem.replace("-", " ").replace("_", " ").strip().title()
+def _extract_pdf(path: Path) -> ExtractedSource:
+    title = _title_from_stem(path.stem)
     text = (
         f"PDF source named {title}. "
         "Content extraction is deferred to Anthropic's native PDF reader during analysis."
     )
-    return title, normalize_text(text)
+    normalized = normalize_text(text)
+    return ExtractedSource(
+        title=title,
+        normalized_text=normalized,
+        paragraphs=(normalized,),
+        headings=(),
+        metadata_only=True,
+    )
 
 
-def _extract_html(path: Path) -> tuple[str, str]:
+def _extract_html(path: Path) -> ExtractedSource:
     html = path.read_text(errors="ignore")
     soup = BeautifulSoup(html, "html.parser")
     title = normalize_text(soup.title.get_text(" ", strip=True) if soup.title else path.stem)
     article = soup.find("article")
     body_node = article or soup.body or soup
+    for tag in body_node.find_all(["nav", "footer", "aside", "script", "style", "noscript"]):
+        tag.decompose()
+
+    headings = [
+        text
+        for text in (
+            normalize_text(node.get_text(" ", strip=True))
+            for node in body_node.find_all(re.compile("^h[1-6]$"))
+        )
+        if text
+    ]
+    paragraphs = [
+        text
+        for text in (
+            normalize_text(node.get_text(" ", strip=True))
+            for node in body_node.find_all(["p", "li", "blockquote"])
+        )
+        if text
+    ]
     text = normalize_text(body_node.get_text(" ", strip=True))
-    return title[:120], text
+    return ExtractedSource(
+        title=title[:120],
+        normalized_text=text,
+        paragraphs=tuple(paragraphs or _paragraphs_from_text(body_node.get_text("\n\n", strip=True))),
+        headings=tuple(_dedupe_headings(headings, title[:120])),
+        metadata_only=False,
+    )
 
 
-def _extract_markdown(path: Path) -> tuple[str, str]:
+def _extract_markdown(path: Path) -> ExtractedSource:
     text = path.read_text(errors="ignore")
-    # Try to extract title from first heading
-    title = path.stem.replace("-", " ").replace("_", " ").strip().title()
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("# "):
-            title = stripped[2:].strip()
-            break
-    return title, normalize_text(text)
+    cleaned = _strip_comments(text)
+    frontmatter, markdown_body = _strip_markdown_frontmatter(cleaned)
+    body_without_code = _strip_fenced_code(markdown_body)
+    title = _title_from_markdown(markdown_body, path, frontmatter)
+    headings = _dedupe_headings(_extract_markdown_headings(body_without_code), title)
+    paragraphs = _paragraphs_from_text(body_without_code, strip_headings=True)
+    normalized = normalize_text(body_without_code)
+    return ExtractedSource(
+        title=title,
+        normalized_text=normalized,
+        paragraphs=tuple(paragraphs),
+        headings=tuple(headings),
+        metadata_only=False,
+    )
 
 
-def _extract_image_stub(path: Path) -> tuple[str, str]:
-    title = path.stem.replace("-", " ").replace("_", " ").strip().title()
+def _extract_image_stub(path: Path) -> ExtractedSource:
+    title = _title_from_stem(path.stem)
     size = path.stat().st_size
     suffix = path.suffix.lower().lstrip(".")
     text = (
@@ -122,7 +199,111 @@ def _extract_image_stub(path: Path) -> tuple[str, str]:
         "Visual analysis is not available in this pipeline yet, so this ingest is metadata-only. "
         "Use the resulting source page to anchor provenance and link the image into related wiki pages."
     )
-    return title, normalize_text(text)
+    normalized = normalize_text(text)
+    return ExtractedSource(
+        title=title,
+        normalized_text=normalized,
+        paragraphs=(normalized,),
+        headings=(),
+        metadata_only=True,
+    )
+
+
+def _strip_comments(text: str) -> str:
+    return HTML_COMMENT_RE.sub("", text)
+
+
+def _strip_markdown_frontmatter(text: str) -> tuple[dict[str, object], str]:
+    frontmatter, body, has_frontmatter = parse_markdown_text(text)
+    if has_frontmatter:
+        return frontmatter, body
+    return {}, text
+
+
+def _title_from_markdown(text: str, path: Path, frontmatter: dict[str, object] | None = None) -> str:
+    if frontmatter:
+        frontmatter_title = normalize_text(str(frontmatter.get("title", "")))
+        if frontmatter_title:
+            return frontmatter_title
+    title = _title_from_stem(path.stem)
+    for line in text.splitlines():
+        match = HEADING_RE.match(line)
+        if match and line.lstrip().startswith("# "):
+            title = normalize_text(match.group(1))
+            break
+    return title
+
+
+def _extract_markdown_headings(text: str) -> list[str]:
+    headings: list[str] = []
+    for line in _markdown_lines_without_fences(text):
+        match = HEADING_RE.match(line)
+        if not match:
+            continue
+        heading = normalize_text(match.group(1))
+        if heading:
+            headings.append(heading)
+    return headings
+
+
+def _paragraphs_from_text(text: str, *, strip_headings: bool = False) -> list[str]:
+    paragraphs: list[str] = []
+    for block in re.split(r"\n\s*\n", text):
+        cleaned_lines: list[str] = []
+        for line in _markdown_lines_without_fences(block):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if stripped.startswith("<!--"):
+                continue
+            if strip_headings and HEADING_RE.match(stripped):
+                continue
+            stripped = re.sub(r"^[-*+]\s+", "", stripped)
+            stripped = re.sub(r"^>\s*", "", stripped)
+            cleaned_lines.append(stripped)
+        paragraph = normalize_text(" ".join(cleaned_lines))
+        if paragraph:
+            paragraphs.append(paragraph)
+    return paragraphs
+
+
+def _strip_fenced_code(text: str) -> str:
+    return "\n".join(_markdown_lines_without_fences(text))
+
+
+def _markdown_lines_without_fences(text: str) -> list[str]:
+    lines: list[str] = []
+    in_fence = False
+    fence_marker = ""
+    for line in text.splitlines():
+        stripped = line.strip()
+        fence_match = re.match(r"^(```+|~~~+)", stripped)
+        if fence_match:
+            marker = fence_match.group(1)
+            if not in_fence:
+                in_fence = True
+                fence_marker = marker[0]
+            elif stripped.startswith(fence_marker * 3):
+                in_fence = False
+                fence_marker = ""
+            continue
+        if in_fence:
+            continue
+        lines.append(line)
+    return lines
+
+
+def _dedupe_headings(headings: list[str], title: str) -> list[str]:
+    seen: set[str] = set()
+    results: list[str] = []
+    title_key = normalize_text(title).lower()
+    for heading in headings:
+        heading_key = normalize_text(heading).lower()
+        if not heading_key or heading_key == title_key or heading_key in seen:
+            continue
+        seen.add(heading_key)
+        results.append(heading)
+    return results
 
 
 def is_url(path_or_url: str) -> bool:

@@ -272,8 +272,8 @@ def test_health_cli_flags_malformed_summary(tmp_path: Path) -> None:
         "type: article\n"
         "status: seed\n"
         "summary: Coupled dynamics shows  at scale.\n"
-        "created: 2026-01-01T00:00:00+00:00\n"
-        "updated: 2026-01-01T00:00:00+00:00\n"
+        "created: 2026-01-01 00:00\n"
+        "updated: 2026-01-01 00:00\n"
         "---\n\n"
         "# Broken Summary\n\n"
         "A page with enough body text to count as real content.\n\n"
@@ -409,6 +409,86 @@ def test_obsidian_cli_upsert_writes_generic_article_page(tmp_path: Path) -> None
     assert "type: article" in article_path.read_text()
 
 
+def test_obsidian_cli_upsert_reads_body_from_file(tmp_path: Path) -> None:
+    init_workspace(tmp_path, "Test Topic", "Connector coverage.")
+    runner = CliRunner()
+    body_file = tmp_path / "body.md"
+    body_file.write_text("# Custom Body\n\nUse $HOME, `code`, 'quotes', and [[Index]].\n")
+
+    result = runner.invoke(
+        main,
+        [
+            "obsidian",
+            "upsert",
+            "Body File Page",
+            "--page-type",
+            "article",
+            "--body-file",
+            str(body_file),
+            "--path",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 0
+    article_path = tmp_path / "wiki" / "articles" / "Body File Page.md"
+    content = article_path.read_text()
+    assert "# Custom Body" in content
+    assert "$HOME" in content
+    assert "`code`" in content
+    assert "[[Index]]" in content
+
+
+def test_obsidian_cli_upsert_rejects_body_and_body_file(tmp_path: Path) -> None:
+    init_workspace(tmp_path, "Test Topic", "Connector coverage.")
+    runner = CliRunner()
+    body_file = tmp_path / "body.md"
+    body_file.write_text("Body from file.\n")
+
+    result = runner.invoke(
+        main,
+        [
+            "obsidian",
+            "upsert",
+            "Conflict",
+            "--page-type",
+            "article",
+            "--body",
+            "Inline body.",
+            "--body-file",
+            str(body_file),
+            "--path",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "Use either --body or --body-file" in result.output
+
+
+def test_obsidian_cli_upsert_missing_body_file_fails(tmp_path: Path) -> None:
+    init_workspace(tmp_path, "Test Topic", "Connector coverage.")
+    runner = CliRunner()
+
+    result = runner.invoke(
+        main,
+        [
+            "obsidian",
+            "upsert",
+            "Missing File",
+            "--page-type",
+            "article",
+            "--body-file",
+            str(tmp_path / "missing.md"),
+            "--path",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "does not exist" in result.output
+
+
 def test_obsidian_cli_refresh_rebuilds_generic_navigation(tmp_path: Path) -> None:
     init_workspace(tmp_path, "Test Topic", "Connector coverage.")
     runner = CliRunner()
@@ -430,7 +510,7 @@ def test_obsidian_cli_refresh_rebuilds_generic_navigation(tmp_path: Path) -> Non
     assert "Articles: 1" in overview_text
 
 
-def test_ingest_cli_creates_source_scaffold_and_updates_nav(tmp_path: Path) -> None:
+def test_ingest_cli_creates_source_note_and_updates_nav(tmp_path: Path) -> None:
     init_workspace(tmp_path, "Test Topic", "Connector coverage.")
     runner = CliRunner()
 
@@ -440,6 +520,7 @@ def test_ingest_cli_creates_source_scaffold_and_updates_nav(tmp_path: Path) -> N
     result = runner.invoke(main, ["ingest", "example-source.md", "--path", str(tmp_path)])
 
     assert result.exit_code == 0
+    assert "Source note created" in result.output
     source_path = tmp_path / "wiki" / "sources" / "Example Source.md"
     assert source_path.exists()
     source_text = source_path.read_text()

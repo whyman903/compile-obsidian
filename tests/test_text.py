@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from compile.text import (
+    extract_source,
     extract_text,
     fix_pdf_artifacts,
     is_equation_heavy,
@@ -95,6 +96,37 @@ class TestExtractText:
         title, text = extract_text(md_file)
         assert title == "My Doc"  # derived from filename
         assert "Just body text" in text
+
+    def test_markdown_strips_yaml_frontmatter_from_normalized_text(self, tmp_path: Path) -> None:
+        md_file = tmp_path / "frontmatter.md"
+        md_file.write_text(
+            "---\n"
+            "title: Research on Neural Networks\n"
+            "author: Jane Smith\n"
+            "---\n\n"
+            "# Research on Neural Networks\n\n"
+            "This is the real body paragraph.\n"
+        )
+        extracted = extract_source(md_file)
+        assert extracted.title == "Research on Neural Networks"
+        assert "author: Jane Smith" not in extracted.normalized_text
+        assert extracted.paragraphs == ("This is the real body paragraph.",)
+
+    def test_markdown_ignores_fenced_code_in_headings_and_paragraphs(self, tmp_path: Path) -> None:
+        md_file = tmp_path / "code.md"
+        md_file.write_text(
+            "# Code Notes\n\n"
+            "```python\n"
+            "# not a real heading\n"
+            "very_long_code_identifier = 1\n"
+            "```\n\n"
+            "Real paragraph here with enough words to count as substantive content for the synopsis.\n"
+        )
+        extracted = extract_source(md_file)
+        assert extracted.headings == ()
+        assert extracted.paragraphs == (
+            "Real paragraph here with enough words to count as substantive content for the synopsis.",
+        )
 
     def test_txt_file(self, tmp_path: Path) -> None:
         txt_file = tmp_path / "notes.txt"
