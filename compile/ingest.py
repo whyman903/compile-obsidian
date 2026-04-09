@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from compile.obsidian import ObsidianConnector, SearchHit
-from compile.text import ExtractedSource, normalize_text
+from compile.text import ExtractedAsset, ExtractedSource, normalize_text
 
 _EXCLUDED_PAGE_TYPES = {"source", "index", "overview", "log"}
 _STRONG_REASONS = {"exact-title", "exact-alias", "title-match", "alias-match"}
@@ -16,6 +16,7 @@ class IngestArtifact:
     page_summary: str
     synopsis: str
     key_sections: list[str]
+    assets: list[ExtractedAsset]
     related_pages: list[SearchHit]
     integration_notes: list[str]
     raw_relative: str
@@ -45,6 +46,7 @@ def build_ingest_artifact(
         page_summary=_frontmatter_summary(synopsis),
         synopsis=synopsis,
         key_sections=list(extracted.headings[:6]) if not extracted.metadata_only else [],
+        assets=list(extracted.assets),
         related_pages=related_pages,
         integration_notes=_integration_notes(related_pages),
         raw_relative=raw_relative,
@@ -134,6 +136,23 @@ def render_source_body(artifact: IngestArtifact) -> str:
             *[f"- {note}" for note in artifact.integration_notes],
         ])
 
+    if artifact.assets:
+        lines.extend([
+            "",
+            "## Figures",
+            "",
+        ])
+        for index, asset in enumerate(artifact.assets, start=1):
+            lines.extend([
+                f"### Figure {index}",
+                "",
+                f"![[{asset.relative_path}]]",
+                "",
+                f"- Page: {asset.page_number}",
+                f"- Dimensions: {asset.width} x {asset.height}",
+                "",
+            ])
+
     if artifact.metadata_only:
         lines.extend([
             "",
@@ -162,6 +181,11 @@ def _build_synopsis(extracted: ExtractedSource) -> str:
         if _is_substantive_paragraph(paragraph)
     ] or extracted.paragraphs
     if not candidates:
+        if extracted.assets:
+            return (
+                f"Extracted {len(extracted.assets)} figure(s) from the source PDF, "
+                "but little usable body text."
+            )
         return DEFAULT_SOURCE_SYNOPSIS
 
     selected: list[str] = []

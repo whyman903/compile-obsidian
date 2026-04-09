@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+import struct
+import zlib
 
 import pytest
 
 from compile.text import (
+    _slugified_path,
     extract_source,
     extract_text,
     fix_pdf_artifacts,
@@ -14,6 +17,57 @@ from compile.text import (
     normalize_text,
     slugify,
 )
+
+
+def _png_bytes(width: int, height: int, color: tuple[int, int, int] = (0, 128, 255)) -> bytes:
+    row = bytes(color) * width
+    raw = b"".join(b"\x00" + row for _ in range(height))
+    compressed = zlib.compress(raw)
+
+    def chunk(kind: bytes, payload: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(payload))
+            + kind
+            + payload
+            + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
+        )
+
+    header = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return b"".join(
+        [
+            b"\x89PNG\r\n\x1a\n",
+            chunk(b"IHDR", header),
+            chunk(b"IDAT", compressed),
+            chunk(b"IEND", b""),
+        ]
+    )
+
+
+def _write_pdf(
+    path: Path,
+    *,
+    page_texts: list[str] | None = None,
+    images_by_page: list[list[bytes]] | None = None,
+) -> None:
+    fitz = pytest.importorskip("fitz")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc = fitz.open()
+    page_texts = page_texts or []
+    images_by_page = images_by_page or []
+    total_pages = max(len(page_texts), len(images_by_page), 1)
+
+    for index in range(total_pages):
+        page = doc.new_page()
+        if index < len(page_texts) and page_texts[index]:
+            page.insert_text((72, 72), page_texts[index])
+        if index < len(images_by_page):
+            top = 140
+            for image_bytes in images_by_page[index]:
+                page.insert_image(fitz.Rect(72, top, 272, top + 150), stream=image_bytes)
+                top += 170
+
+    doc.save(path)
+    doc.close()
 
 
 class TestSlugify:
@@ -36,6 +90,26 @@ class TestSlugify:
 
     def test_leading_trailing_hyphens_stripped(self) -> None:
         assert slugify("--hello--") == "hello"
+
+
+class TestSlugifiedPath:
+    def test_basic(self) -> None:
+        assert _slugified_path(Path("papers/article")) == Path("papers/article")
+
+    def test_with_source_key_adds_hash(self) -> None:
+        result = _slugified_path(Path("papers/article"), source_key="raw/papers/article.pdf")
+        parts = result.parts
+        assert parts[0] == "papers"
+        assert parts[1].startswith("article-")
+        assert len(parts[1]) == len("article-") + 6  # 6-char hash
+
+    def test_source_key_prevents_collision(self) -> None:
+        a = _slugified_path(Path("a-b/paper"), source_key="raw/a-b/paper.pdf")
+        b = _slugified_path(Path("a-b/paper"), source_key="raw/a_b/paper.pdf")
+        assert a != b
+
+    def test_without_source_key_unchanged(self) -> None:
+        assert _slugified_path(Path("a-b/paper")) == Path("a-b/paper")
 
 
 class TestNormalizeText:
@@ -155,6 +229,111 @@ class TestExtractText:
         title, text = extract_text(pdf_file)
         assert title == "Paper"
         assert "PDF source" in text
+
+    def test_pdf_extracts_text(self, tmp_path: Path) -> None:
+        raw_dir = tmp_path / "raw"
+        raw_dir.mkdir()
+        pdf_file = raw_dir / "paper.pdf"
+        _write_pdf(
+            pdf_file,
+            page_texts=[
+                "This PDF contains substantive text about a durable topic and should be extracted.",
+            ],
+        )
+
+        extracted = extract_source(pdf_file)
+        assert extracted.metadata_only is False
+        assert "This PDF contains substantive text" in extracted.normalized_text
+        assert extracted.assets == ()
+
+    def test_pdf_extracts_and_deduplicates_figures(self, tmp_path: Path) -> None:
+        raw_dir = tmp_path / "raw"
+        raw_dir.mkdir()
+        pdf_file = raw_dir / "paper.pdf"
+        figure = _png_bytes(200, 150)
+        _write_pdf(
+            pdf_file,
+            page_texts=["Short supporting text that should still be captured."],
+            images_by_page=[[figure, figure]],
+        )
+
+        extracted = extract_source(pdf_file)
+        assert extracted.metadata_only is False
+        assert len(extracted.assets) == 1
+        asset = extracted.assets[0]
+        assert asset.relative_path.startswith("raw/assets/paper-")
+        assert "/page-001-image-01." in asset.relative_path
+        assert asset.width == 200
+        assert asset.height == 150
+        assert len(asset.sha1) == 40
+        assert (tmp_path / asset.relative_path).exists()
+
+    def test_pdf_with_figures_only_is_not_metadata_only(self, tmp_path: Path) -> None:
+        raw_dir = tmp_path / "raw"
+        raw_dir.mkdir()
+        pdf_file = raw_dir / "paper.pdf"
+        _write_pdf(pdf_file, images_by_page=[[_png_bytes(200, 150)]])
+
+        extracted = extract_source(pdf_file)
+        assert extracted.metadata_only is False
+        assert len(extracted.assets) == 1
+        assert "Extracted 1 figure" in extracted.normalized_text
+
+    def test_pdf_assets_are_namespaced_by_source_path(self, tmp_path: Path) -> None:
+        first_pdf = tmp_path / "raw" / "a" / "paper.pdf"
+        second_pdf = tmp_path / "raw" / "b" / "paper.pdf"
+        _write_pdf(first_pdf, images_by_page=[[_png_bytes(200, 150, (255, 0, 0))]])
+        _write_pdf(second_pdf, images_by_page=[[_png_bytes(201, 150, (0, 255, 0))]])
+
+        first = extract_source(first_pdf)
+        second = extract_source(second_pdf)
+
+        assert first.assets[0].relative_path.startswith("raw/assets/a/paper-")
+        assert second.assets[0].relative_path.startswith("raw/assets/b/paper-")
+        assert first.assets[0].relative_path != second.assets[0].relative_path
+        assert (tmp_path / first.assets[0].relative_path).read_bytes() != (tmp_path / second.assets[0].relative_path).read_bytes()
+
+    def test_pdf_outside_raw_still_uses_workspace_relative_asset_paths(self, tmp_path: Path) -> None:
+        workspace_root = tmp_path
+        (workspace_root / ".compile").mkdir()
+        (workspace_root / ".compile" / "config.yaml").write_text("topic: Test\n")
+        pdf_file = workspace_root / "docs" / "paper.pdf"
+        _write_pdf(pdf_file, images_by_page=[[_png_bytes(200, 150)]])
+
+        extracted = extract_source(pdf_file)
+
+        assert extracted.assets[0].relative_path.startswith("raw/assets/docs/paper-")
+        assert not extracted.assets[0].relative_path.startswith("/")
+        assert (workspace_root / extracted.assets[0].relative_path).exists()
+
+    def test_pdf_reextract_cleans_stale_assets(self, tmp_path: Path) -> None:
+        pdf_file = tmp_path / "raw" / "report.pdf"
+        _write_pdf(
+            pdf_file,
+            images_by_page=[[_png_bytes(200, 150), _png_bytes(201, 150, (255, 0, 0))]],
+        )
+        first = extract_source(pdf_file)
+
+        assets_dir = (tmp_path / first.assets[0].relative_path).parent
+        assert sorted(path.name for path in assets_dir.iterdir()) == [
+            "page-001-image-01.png",
+            "page-001-image-02.png",
+        ]
+
+        _write_pdf(pdf_file, images_by_page=[[_png_bytes(200, 150)]])
+        extract_source(pdf_file)
+
+        assert sorted(path.name for path in assets_dir.iterdir()) == ["page-001-image-01.png"]
+
+    def test_pdf_skips_small_decorative_images(self, tmp_path: Path) -> None:
+        raw_dir = tmp_path / "raw"
+        raw_dir.mkdir()
+        pdf_file = raw_dir / "paper.pdf"
+        _write_pdf(pdf_file, images_by_page=[[_png_bytes(40, 40)]])
+
+        extracted = extract_source(pdf_file)
+        assert extracted.metadata_only is True
+        assert extracted.assets == ()
 
     def test_image_file(self, tmp_path: Path) -> None:
         img_file = tmp_path / "photo.jpg"

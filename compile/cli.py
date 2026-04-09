@@ -36,6 +36,64 @@ def _load_workspace():
         raise SystemExit(1)
 
 
+def _find_source_page_by_title(connector: ObsidianConnector, title: str):
+    exact_matches = [
+        hit for hit in connector.search(title, page_type="source", limit=10)
+        if hit.title == title
+    ]
+    if len(exact_matches) > 1:
+        console.print(f"[yellow]Warning: Multiple source pages titled '{title}'[/yellow]")
+        return None
+    if not exact_matches:
+        return None
+    return connector.get_page(exact_matches[0].relative_path)
+
+
+def _humanize_source_label(value: str) -> str:
+    cleaned = value.replace("-", " ").replace("_", " ").strip()
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned.title() or "Source"
+
+
+def _candidate_source_titles(base_title: str, raw_relative: str):
+    relative = Path(raw_relative).with_suffix("")
+    parts = list(relative.parts)
+    if parts and parts[0].lower() == "raw":
+        parts = parts[1:]
+    parents = parts[:-1]
+    labels: list[str] = []
+    for parent in reversed(parents):
+        labels.insert(0, _humanize_source_label(parent))
+        yield f"{base_title} ({' - '.join(labels)})"
+    for index in range(2, 100):
+        yield f"{base_title} ({index})"
+
+
+def _resolve_source_title(
+    connector: ObsidianConnector,
+    *,
+    desired_title: str,
+    raw_relative: str,
+):
+    # Primary key: raw source path.  One raw file → one source page.
+    existing_by_path = connector.find_source_page_by_raw_path(raw_relative)
+    if existing_by_path is not None:
+        return desired_title, existing_by_path
+
+    # Fallback: title-based disambiguation (for new sources).
+    existing_page = _find_source_page_by_title(connector, desired_title)
+    if existing_page is None:
+        return desired_title, None
+
+    # Title is taken by a different source — disambiguate.
+    for candidate in _candidate_source_titles(desired_title, raw_relative):
+        candidate_page = _find_source_page_by_title(connector, candidate)
+        if candidate_page is None:
+            return candidate, None
+
+    raise ValueError(f"Could not find a unique source title for '{desired_title}'.")
+
+
 @click.group()
 def main() -> None:
     """Compile — an LLM-maintained wiki workspace."""
@@ -102,24 +160,38 @@ def ingest(source: str, path: str, title: str | None, images: bool) -> None:
         except ValueError:
             console.print("[red]Raw source must live inside the workspace root.[/red]")
             raise SystemExit(1)
+        try:
+            raw_path.relative_to(config.raw_dir)
+        except ValueError:
+            console.print("[red]Source files must be in the raw/ directory.[/red]")
+            console.print(f"  Move the file to {config.raw_dir} and retry.")
+            raise SystemExit(1)
 
     connector = ObsidianConnector(config.workspace_root)
     raw_relative = str(raw_path.relative_to(config.workspace_root)).replace("\\", "/")
     extracted = extract_source(raw_path)
-    effective_title = title or extracted.title
+    desired_title = title or extracted.title
+    try:
+        effective_title, existing_source_page = _resolve_source_title(
+            connector,
+            desired_title=desired_title,
+            raw_relative=raw_relative,
+        )
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise SystemExit(1)
 
     # Guard against re-clobbering an enriched source note.
     # If a source page already exists for this title and has been enriched
     # beyond the registration shell, skip the overwrite and mark it processed.
-    try:
-        existing = connector.get_page(effective_title)
-        if existing.page_type == "source" and "This is a registration shell." not in existing.body:
-            mark_processed(config, raw_path, [existing.relative_path])
-            console.print(f"[yellow]Source already enriched:[/yellow] {existing.relative_path}")
-            console.print("  Marked as processed. Skipping re-ingest.")
-            return
-    except (FileNotFoundError, ValueError):
-        pass
+    if (
+        existing_source_page is not None
+        and "This is a registration shell." not in existing_source_page.body
+    ):
+        mark_processed(config, raw_path, [existing_source_page.relative_path])
+        console.print(f"[yellow]Source already enriched:[/yellow] {existing_source_page.relative_path}")
+        console.print("  Marked as processed. Skipping re-ingest.")
+        return
 
     artifact = build_ingest_artifact(
         raw_relative=raw_relative,
@@ -127,12 +199,23 @@ def ingest(source: str, path: str, title: str | None, images: bool) -> None:
         connector=connector,
         title=effective_title,
     )
+    # When replacing a registration shell with a new title, remove the old file
+    # so upsert_page creates the page at a path matching the new title.
+    pin_path: str | None = None
+    if existing_source_page is not None:
+        if effective_title == existing_source_page.title:
+            pin_path = existing_source_page.relative_path
+        else:
+            old_file = config.workspace_root / existing_source_page.relative_path
+            if old_file.exists():
+                old_file.unlink()
     page = connector.upsert_page(
         title=artifact.title,
         body=render_source_body(artifact),
         page_type="source",
         summary=artifact.page_summary,
         sources=[raw_relative],
+        relative_path=pin_path,
     )
 
     if not artifact.metadata_only:
@@ -424,6 +507,37 @@ def obsidian_upsert(
 
 # --- Rich output rendering ---
 
+
+def _read_utf8_text_file(path: Path, *, label: str) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        console.print(f"[red]Failed to read {label} file as UTF-8:[/red] {path}")
+        raise SystemExit(1)
+    except OSError as exc:
+        console.print(f"[red]Failed to read {label} file:[/red] {exc}")
+        raise SystemExit(1)
+
+
+def _resolve_inline_or_file(
+    *,
+    inline_value: str | None,
+    file_value: Path | None,
+    inline_flag: str,
+    file_flag: str,
+    label: str,
+) -> str:
+    if inline_value is not None and file_value is not None:
+        console.print(f"[red]Use either {inline_flag} or {file_flag}, not both.[/red]")
+        raise SystemExit(1)
+    if file_value is not None:
+        return _read_utf8_text_file(file_value, label=label)
+    if inline_value is not None:
+        return inline_value
+    console.print(f"[red]Provide either {inline_flag} or {file_flag}.[/red]")
+    raise SystemExit(1)
+
+
 @main.group()
 def render() -> None:
     """Generate rich output formats (Marp slides, charts, canvas)."""
@@ -432,16 +546,37 @@ def render() -> None:
 @render.command("marp")
 @click.argument("title")
 @click.option("--path", "-p", default=".", help="Workspace root.")
-@click.option("--body", required=True, help="Slide markdown (use --- for slide separators).")
+@click.option("--body", default=None, help="Slide markdown (use --- for slide separators).")
+@click.option(
+    "--body-file",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Read slide markdown from a UTF-8 file.",
+)
 @click.option("--theme", default="default", help="Marp theme name.")
 @click.option("--summary", default=None, help="Frontmatter summary.")
 @click.option("--tag", "tags", multiple=True)
-def render_marp(title: str, path: str, body: str, theme: str, summary: str | None, tags: tuple[str, ...]) -> None:
+def render_marp(
+    title: str,
+    path: str,
+    body: str | None,
+    body_file: Path | None,
+    theme: str,
+    summary: str | None,
+    tags: tuple[str, ...],
+) -> None:
     """Generate a Marp slide deck and save as a wiki output page."""
     root = Path(path).resolve()
     config = load_config(root)
     connector = ObsidianConnector(root)
-    marp_body, marp_fm = generate_marp(title, body, theme=theme)
+    body_text = _resolve_inline_or_file(
+        inline_value=body,
+        file_value=body_file,
+        inline_flag="--body",
+        file_flag="--body-file",
+        label="body",
+    )
+    marp_body, marp_fm = generate_marp(title, body_text, theme=theme)
     page = connector.upsert_page(
         title=title,
         body=marp_body,
@@ -461,22 +596,42 @@ def render_marp(title: str, path: str, body: str, theme: str, summary: str | Non
 @render.command("chart")
 @click.argument("title")
 @click.option("--path", "-p", default=".", help="Workspace root.")
-@click.option("--script", required=True, help="Python matplotlib script.")
+@click.option("--script", default=None, help="Python matplotlib script.")
+@click.option(
+    "--script-file",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Read the matplotlib script from a UTF-8 file.",
+)
 @click.option("--summary", default=None, help="Frontmatter summary.")
 @click.option("--tag", "tags", multiple=True)
-def render_chart(title: str, path: str, script: str, summary: str | None, tags: tuple[str, ...]) -> None:
+def render_chart(
+    title: str,
+    path: str,
+    script: str | None,
+    script_file: Path | None,
+    summary: str | None,
+    tags: tuple[str, ...],
+) -> None:
     """Execute a matplotlib script and save the chart as a wiki output page."""
     root = Path(path).resolve()
     config = load_config(root)
     connector = ObsidianConnector(root)
     output_dir = config.wiki_dir / "outputs"
+    script_text = _resolve_inline_or_file(
+        inline_value=script,
+        file_value=script_file,
+        inline_flag="--script",
+        file_flag="--script-file",
+        label="script",
+    )
     try:
-        image_path = generate_chart(title, script, output_dir)
+        image_path = generate_chart(title, script_text, output_dir)
     except RuntimeError as exc:
         console.print(f"[red]Chart generation failed:[/red] {exc}")
         raise SystemExit(1)
     rel_image = str(image_path.relative_to(config.workspace_root)).replace("\\", "/")
-    body = f"![[{rel_image}]]\n\n## Script\n\n```python\n{script}\n```\n"
+    body = f"![[{rel_image}]]\n\n## Script\n\n```python\n{script_text}\n```\n"
     page = connector.upsert_page(
         title=title,
         body=body,
@@ -494,17 +649,48 @@ def render_chart(title: str, path: str, script: str, summary: str | None, tags: 
 @render.command("canvas")
 @click.argument("title")
 @click.option("--path", "-p", default=".", help="Workspace root.")
-@click.option("--nodes", required=True, help='JSON array of node objects (each with "text" key).')
+@click.option("--nodes", default=None, help='JSON array of node objects (each with "text" key).')
+@click.option(
+    "--nodes-file",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Read node JSON from a UTF-8 file.",
+)
 @click.option("--edges", default=None, help='Optional JSON array of edge objects (each with "from" and "to" keys).')
+@click.option(
+    "--edges-file",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Read edge JSON from a UTF-8 file.",
+)
 @click.option("--summary", default=None, help="Frontmatter summary.")
-def render_canvas(title: str, path: str, nodes: str, edges: str | None, summary: str | None) -> None:
+def render_canvas(
+    title: str,
+    path: str,
+    nodes: str | None,
+    nodes_file: Path | None,
+    edges: str | None,
+    edges_file: Path | None,
+    summary: str | None,
+) -> None:
     """Generate an Obsidian Canvas file and a companion wiki output page."""
     root = Path(path).resolve()
     config = load_config(root)
     connector = ObsidianConnector(root)
+    nodes_text = _resolve_inline_or_file(
+        inline_value=nodes,
+        file_value=nodes_file,
+        inline_flag="--nodes",
+        file_flag="--nodes-file",
+        label="nodes",
+    )
+    if edges is not None and edges_file is not None:
+        console.print("[red]Use either --edges or --edges-file, not both.[/red]")
+        raise SystemExit(1)
+    edge_text = _read_utf8_text_file(edges_file, label="edges") if edges_file is not None else edges
     try:
-        node_list = json.loads(nodes)
-        edge_list = json.loads(edges) if edges else []
+        node_list = json.loads(nodes_text)
+        edge_list = json.loads(edge_text) if edge_text else []
     except json.JSONDecodeError as exc:
         console.print(f"[red]Invalid JSON:[/red] {exc}")
         raise SystemExit(1)

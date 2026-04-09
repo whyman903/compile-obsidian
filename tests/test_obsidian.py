@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from click.testing import CliRunner
+import pytest
 
 from compile.cli import main
 from compile.obsidian import ObsidianConnector
@@ -369,6 +370,49 @@ def test_obsidian_connector_flags_navigation_provenance_and_stale_overview(tmp_p
     assert "wiki/questions/beta-question.md" in report.navigation_bottlenecks
 
 
+def test_obsidian_connector_flags_legacy_stale_navigation_without_bootstrap_flag(tmp_path: Path) -> None:
+    init_workspace(tmp_path, "Test Topic", "Connector coverage.")
+
+    _write_page(
+        tmp_path / "wiki" / "articles" / "alpha.md",
+        "Alpha",
+        "article",
+        "A substantive article that links to [[Index]].",
+    )
+    (tmp_path / "wiki" / "overview.md").write_text(
+        "---\n"
+        "title: Test Topic Overview\n"
+        "type: overview\n"
+        "status: stable\n"
+        "---\n\n"
+        "# Test Topic\n\n"
+        "A maintained wiki workspace.\n\n"
+        "## Current State\n\n"
+        "This workspace was just initialized. Add material to `raw/` or create pages in `wiki/articles/`.\n\n"
+        "## Highlights\n\n"
+        "_Highlights will emerge as the wiki grows._\n"
+    )
+    (tmp_path / "wiki" / "index.md").write_text(
+        "---\n"
+        "title: Index\n"
+        "type: index\n"
+        "status: stable\n"
+        "---\n\n"
+        "# Test Topic — Index\n\n"
+        "## Sources\n\n"
+        "_No source notes yet._\n\n"
+        "## Articles\n\n"
+        "_Articles will appear as the wiki grows._\n"
+    )
+
+    connector = ObsidianConnector(tmp_path)
+    report = connector.inspect()
+
+    assert any(issue.code == "stale_navigation_pages" for issue in report.issues)
+    assert "wiki/overview.md" in report.stale_navigation_pages
+    assert "wiki/index.md" in report.stale_navigation_pages
+
+
 def test_obsidian_cli_cleanup_quarantines_empty_auxiliary_files(tmp_path: Path) -> None:
     init_workspace(tmp_path, "Test Topic", "Connector coverage.")
     runner = CliRunner()
@@ -533,3 +577,67 @@ def test_ingest_cli_creates_source_note_and_updates_nav(tmp_path: Path) -> None:
     assert "[[Example Source]]" in index_text
     assert "Sources: 1" in overview_text
     assert "ingest | Example Source" in log_text
+
+
+def test_find_source_page_by_raw_path(tmp_path: Path) -> None:
+    init_workspace(tmp_path, "Test Topic")
+    _write_page(
+        tmp_path / "wiki" / "sources" / "Paper.md",
+        "Paper",
+        "source",
+        "Source note.\n\nsources:\n- raw/paper.md",
+    )
+
+    connector = ObsidianConnector(tmp_path)
+    # The sources field must be in frontmatter, not body — write it properly
+    page_path = tmp_path / "wiki" / "sources" / "Paper.md"
+    page_path.write_text(
+        "---\ntitle: Paper\ntype: source\nstatus: seed\n"
+        "summary: A paper.\nsources:\n- raw/paper.md\n"
+        "created: 2026-04-08 00:00\nupdated: 2026-04-08 00:00\n---\n\n# Paper\n\nSource note."
+    )
+
+    found = connector.find_source_page_by_raw_path("raw/paper.md")
+    assert found is not None
+    assert found.title == "Paper"
+
+    assert connector.find_source_page_by_raw_path("raw/other.md") is None
+
+
+def test_find_source_page_by_raw_path_raises_on_duplicates(tmp_path: Path) -> None:
+    init_workspace(tmp_path, "Test Topic")
+    first = tmp_path / "wiki" / "sources" / "Paper.md"
+    first.write_text(
+        "---\n"
+        "title: Paper\n"
+        "type: source\n"
+        "status: seed\n"
+        "summary: A paper.\n"
+        "sources:\n"
+        "- raw/paper.md\n"
+        "created: 2026-04-08 00:00\n"
+        "updated: 2026-04-08 00:00\n"
+        "---\n\n"
+        "# Paper\n\n"
+        "Source note."
+    )
+    second = tmp_path / "wiki" / "sources" / "Paper Copy.md"
+    second.write_text(
+        "---\n"
+        "title: Paper Copy\n"
+        "type: source\n"
+        "status: seed\n"
+        "summary: Another paper.\n"
+        "sources:\n"
+        "- raw/paper.md\n"
+        "created: 2026-04-08 00:00\n"
+        "updated: 2026-04-08 00:00\n"
+        "---\n\n"
+        "# Paper Copy\n\n"
+        "Duplicate source note."
+    )
+
+    connector = ObsidianConnector(tmp_path)
+
+    with pytest.raises(ValueError, match="Multiple source pages claim 'raw/paper.md'"):
+        connector.find_source_page_by_raw_path("raw/paper.md")

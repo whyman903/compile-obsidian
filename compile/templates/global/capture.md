@@ -15,4 +15,4 @@ Workflow:
    cd "{{wiki_path}}" && compile ingest <filename> && compile health
    ```
 
-3. Tell the user: "Captured to wiki and ingested as a source note. If you want, I can continue now by reviewing the raw source, strengthening the source note, and updating related articles."
+3. Tell the user: "Captured to wiki and ingested as a source note. If you want, I can continue now by reviewing the raw source, strengthening the source note, and updating related articles." If the captured insight involves relationships between concepts (a mental model, comparison, or dependency chain), add: "This could also work well as a canvas or diagram — ask me to visualize it."

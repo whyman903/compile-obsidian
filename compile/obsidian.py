@@ -28,13 +28,13 @@ IGNORED_DIRS = {
 }
 
 INVALID_FILENAME_RE = re.compile(r'[<>:"/\\|?*]+')
-STALE_OVERVIEW_MARKERS = (
+LEGACY_STALE_OVERVIEW_MARKERS = (
     "This workspace was just initialized.",
     "_Themes will emerge as sources are compiled._",
     "_Highlights will emerge as the wiki grows._",
     "_Source highlights will appear after the first ingest._",
 )
-STALE_INDEX_MARKERS = (
+LEGACY_STALE_INDEX_MARKERS = (
     "_No sources ingested yet._",
     "_No source notes yet._",
     "_Articles will appear as the wiki grows._",
@@ -357,6 +357,7 @@ class ObsidianConnector:
         self._page_by_locator: dict[str, list[VaultPage]] = {}
         self._page_by_id: dict[str, VaultPage] = {}
         self._source_pages_by_source_id: dict[str, list[VaultPage]] = {}
+        self._source_pages_by_raw_path: dict[str, list[VaultPage]] = {}
         self._file_by_locator: dict[str, list[str]] = {}
 
     def inspect(self) -> VaultReport:
@@ -541,6 +542,20 @@ class ObsidianConnector:
         hits.sort(key=lambda hit: (-hit.score, hit.title.lower(), hit.relative_path))
         return hits[: max(limit, 1)]
 
+    def find_source_page_by_raw_path(self, raw_relative: str) -> VaultPage | None:
+        """Find a source page whose ``sources`` frontmatter contains *raw_relative*."""
+        self.scan()
+        matches = self._source_pages_by_raw_path.get(raw_relative, [])
+        if not matches:
+            return None
+        if len(matches) > 1:
+            matches_text = ", ".join(match.relative_path for match in matches)
+            raise ValueError(
+                f"Multiple source pages claim '{raw_relative}'. "
+                f"Resolve the duplicate source notes first: {matches_text}"
+            )
+        return matches[0]
+
     def get_neighborhood(self, locator: str) -> PageNeighborhood:
         page = self.get_page(locator)
         supporting_source_pages = self._resolve_supporting_source_pages(page)
@@ -699,6 +714,7 @@ class ObsidianConnector:
         locator_lookup: dict[str, list[VaultPage]] = {}
         page_by_id: dict[str, VaultPage] = {}
         source_pages_by_source_id: dict[str, list[VaultPage]] = {}
+        source_pages_by_raw_path: dict[str, list[VaultPage]] = {}
         file_lookup: dict[str, list[str]] = {}
 
         for path in self._iter_all_files():
@@ -723,6 +739,10 @@ class ObsidianConnector:
             if page.page_type == "source":
                 for source_id in _coerce_list(page.frontmatter.get("source_ids")):
                     source_pages_by_source_id.setdefault(source_id, []).append(page)
+                for raw_path in _coerce_list(page.frontmatter.get("sources")):
+                    raw_path_stripped = raw_path.strip() if isinstance(raw_path, str) else str(raw_path).strip()
+                    if raw_path_stripped:
+                        source_pages_by_raw_path.setdefault(raw_path_stripped, []).append(page)
 
         for page in pages:
             resolved_titles: set[str] = set()
@@ -755,6 +775,7 @@ class ObsidianConnector:
         self._page_by_locator = locator_lookup
         self._page_by_id = page_by_id
         self._source_pages_by_source_id = source_pages_by_source_id
+        self._source_pages_by_raw_path = source_pages_by_raw_path
         self._file_by_locator = file_lookup
         return self._pages
 
@@ -836,6 +857,7 @@ class ObsidianConnector:
         self._page_by_locator = {}
         self._page_by_id = {}
         self._source_pages_by_source_id = {}
+        self._source_pages_by_raw_path = {}
         self._file_by_locator = {}
 
     def _default_status_for_type(self, page_type: str) -> str:
@@ -1059,7 +1081,12 @@ class ObsidianConnector:
 
         files: list[Path] = []
         for current_root, dirs, filenames in os.walk(raw_root):
-            dirs[:] = [name for name in dirs if name not in IGNORED_DIRS]
+            current_path = Path(current_root)
+            dirs[:] = [
+                name for name in dirs
+                if name not in IGNORED_DIRS
+                and not (current_path == raw_root and name == "assets")
+            ]
             for filename in filenames:
                 if filename.startswith("."):
                     continue
@@ -1115,11 +1142,16 @@ class ObsidianConnector:
 
         stale_pages: list[str] = []
         for page in pages:
-            body = page.body
-            if page.page_type == "overview" and any(marker in body for marker in STALE_OVERVIEW_MARKERS):
-                stale_pages.append(page.relative_path)
-            if page.page_type == "index" and any(marker in body for marker in STALE_INDEX_MARKERS):
-                stale_pages.append(page.relative_path)
+            if page.page_type == "overview":
+                if page.frontmatter.get("bootstrap") or any(
+                    marker in page.body for marker in LEGACY_STALE_OVERVIEW_MARKERS
+                ):
+                    stale_pages.append(page.relative_path)
+            if page.page_type == "index":
+                if page.frontmatter.get("bootstrap") or any(
+                    marker in page.body for marker in LEGACY_STALE_INDEX_MARKERS
+                ):
+                    stale_pages.append(page.relative_path)
         return sorted(stale_pages)
 
     def _build_issues(

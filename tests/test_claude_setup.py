@@ -30,9 +30,18 @@ def test_fresh_install(tmp_path: Path) -> None:
         content = (home / ".claude" / "commands" / name).read_text()
         assert str(ws) in content
         assert "{{wiki_path}}" not in content
+        assert "wiki-visualize" not in content
+
+    wiki_query = (home / ".claude" / "commands" / "wiki-query.md").read_text()
+    assert "markdown is the fallback" not in wiki_query  # query template should stay concise
+    assert "--nodes-file" in wiki_query
+    assert "--script-file" in wiki_query
 
     # Workspace files exist
-    assert (ws / "CLAUDE.md").exists()
+    workspace_claude = (ws / "CLAUDE.md").read_text()
+    assert "markdown is the fallback, not the default" in workspace_claude.lower()
+    assert "compile render canvas" in workspace_claude
+    assert "/visualize" not in workspace_claude
     assert (ws / ".claude" / "settings.local.json").exists()
     for name in ("context.md", "ingest.md", "lint.md", "query.md"):
         assert (ws / ".claude" / "commands" / name).exists()
@@ -129,6 +138,30 @@ def test_path_with_spaces_quoted_in_shell_commands(tmp_path: Path) -> None:
         for line in content.splitlines():
             if line.strip().startswith(("cd ", "`cd ")):
                 assert f'cd "{ws}"' in line, f"Unquoted path in shell command: {line}"
+
+
+def test_no_visualize_templates_installed(tmp_path: Path) -> None:
+    ws = _make_workspace(tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+
+    install_claude_files(ws, home, force=False)
+
+    assert not (home / ".claude" / "commands" / "wiki-visualize.md").exists()
+    assert not (ws / ".claude" / "commands" / "visualize.md").exists()
+
+
+def test_ingest_template_artifact_before_refresh(tmp_path: Path) -> None:
+    ws = _make_workspace(tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+    install_claude_files(ws, home, force=False)
+    ingest_content = (ws / ".claude" / "commands" / "ingest.md").read_text()
+    artifact_pos = ingest_content.index("Consider one companion")
+    # Use the last occurrence of refresh/health (the main workflow steps, not the batch note)
+    refresh_pos = ingest_content.rindex("compile obsidian refresh")
+    health_pos = ingest_content.rindex("compile health")
+    assert artifact_pos < refresh_pos < health_pos
 
 
 def test_invalid_workspace_errors(tmp_path: Path) -> None:
