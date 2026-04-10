@@ -10,7 +10,10 @@ from rich.table import Table
 
 from compile.config import load_config
 from compile.fetch import fetch_url
-from compile.ingest import build_ingest_artifact, render_source_body
+from compile.ingest import (
+    build_ingest_artifact,
+    render_source_body,
+)
 from compile.obsidian import ObsidianConnector
 from compile.outputs import generate_canvas, generate_chart, generate_marp
 from compile.text import extract_source, is_url
@@ -26,6 +29,8 @@ from compile.workspace import (
 )
 
 console = Console()
+OBSOLETE_GLOBAL_COMMANDS = ("wiki-enrich.md",)
+OBSOLETE_WORKSPACE_COMMANDS = ("enrich.md",)
 
 
 def _load_workspace():
@@ -34,6 +39,76 @@ def _load_workspace():
     except FileNotFoundError:
         console.print("[red]No workspace found. Run 'compile init' first.[/red]")
         raise SystemExit(1)
+
+
+def _iter_managed_templates(directory: Path, *, obsolete: tuple[str, ...] = ()) -> list[Path]:
+    if not directory.is_dir():
+        raise FileNotFoundError(f"Claude template directory not found: {directory}")
+    return sorted(
+        path
+        for path in directory.iterdir()
+        if path.is_file() and path.name not in obsolete
+    )
+
+
+def _find_source_page_by_title(connector: ObsidianConnector, title: str):
+    exact_matches = [
+        hit for hit in connector.search(title, page_type="source", limit=10)
+        if hit.title == title
+    ]
+    if len(exact_matches) > 1:
+        raise ValueError(
+            f"Multiple source pages titled '{title}' exist. "
+            "Resolve the duplicate titles before ingesting again."
+        )
+    if exact_matches:
+        return connector.get_page(exact_matches[0].relative_path)
+    return connector.find_source_page_by_locator(title)
+
+
+def _humanize_source_label(value: str) -> str:
+    cleaned = value.replace("-", " ").replace("_", " ").strip()
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    return cleaned.title() or "Source"
+
+
+def _candidate_source_titles(base_title: str, raw_relative: str):
+    relative = Path(raw_relative).with_suffix("")
+    parts = list(relative.parts)
+    if parts and parts[0].lower() == "raw":
+        parts = parts[1:]
+    parents = parts[:-1]
+    labels: list[str] = []
+    for parent in reversed(parents):
+        labels.insert(0, _humanize_source_label(parent))
+        yield f"{base_title} ({' - '.join(labels)})"
+    for index in range(2, 11):
+        yield f"{base_title} ({index})"
+
+
+def _resolve_source_title(
+    connector: ObsidianConnector,
+    *,
+    desired_title: str,
+    raw_relative: str,
+):
+    # Primary key: raw source path.  One raw file → one source page.
+    existing_by_path = connector.find_source_page_by_raw_path(raw_relative)
+    if existing_by_path is not None:
+        return desired_title, existing_by_path
+
+    # Fallback: title-based disambiguation (for new sources).
+    existing_page = _find_source_page_by_title(connector, desired_title)
+    if existing_page is None:
+        return desired_title, None
+
+    # Title is taken by a different source — disambiguate.
+    for candidate in _candidate_source_titles(desired_title, raw_relative):
+        candidate_page = _find_source_page_by_title(connector, candidate)
+        if candidate_page is None:
+            return candidate, None
+
+    raise ValueError(f"Could not find a unique source title for '{desired_title}'.")
 
 
 @click.group()
@@ -102,24 +177,38 @@ def ingest(source: str, path: str, title: str | None, images: bool) -> None:
         except ValueError:
             console.print("[red]Raw source must live inside the workspace root.[/red]")
             raise SystemExit(1)
+        try:
+            raw_path.relative_to(config.raw_dir)
+        except ValueError:
+            console.print("[red]Source files must be in the raw/ directory.[/red]")
+            console.print(f"  Move the file to {config.raw_dir} and retry.")
+            raise SystemExit(1)
 
     connector = ObsidianConnector(config.workspace_root)
     raw_relative = str(raw_path.relative_to(config.workspace_root)).replace("\\", "/")
     extracted = extract_source(raw_path)
-    effective_title = title or extracted.title
+    desired_title = title or extracted.title
+    try:
+        effective_title, existing_source_page = _resolve_source_title(
+            connector,
+            desired_title=desired_title,
+            raw_relative=raw_relative,
+        )
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise SystemExit(1)
 
     # Guard against re-clobbering an enriched source note.
     # If a source page already exists for this title and has been enriched
     # beyond the registration shell, skip the overwrite and mark it processed.
-    try:
-        existing = connector.get_page(effective_title)
-        if existing.page_type == "source" and "This is a registration shell." not in existing.body:
-            mark_processed(config, raw_path, [existing.relative_path])
-            console.print(f"[yellow]Source already enriched:[/yellow] {existing.relative_path}")
-            console.print("  Marked as processed. Skipping re-ingest.")
-            return
-    except (FileNotFoundError, ValueError):
-        pass
+    if (
+        existing_source_page is not None
+        and "This is a registration shell." not in existing_source_page.body
+    ):
+        mark_processed(config, raw_path, [existing_source_page.relative_path])
+        console.print(f"[yellow]Source already enriched:[/yellow] {existing_source_page.relative_path}")
+        console.print("  Marked as processed. Skipping re-ingest.")
+        return
 
     artifact = build_ingest_artifact(
         raw_relative=raw_relative,
@@ -127,12 +216,23 @@ def ingest(source: str, path: str, title: str | None, images: bool) -> None:
         connector=connector,
         title=effective_title,
     )
+    # When replacing a registration shell with a new title, remove the old file
+    # so upsert_page creates the page at a path matching the new title.
+    pin_path: str | None = None
+    if existing_source_page is not None:
+        if effective_title == existing_source_page.title:
+            pin_path = existing_source_page.relative_path
+        else:
+            old_file = config.workspace_root / existing_source_page.relative_path
+            if old_file.exists():
+                old_file.unlink()
     page = connector.upsert_page(
         title=artifact.title,
         body=render_source_body(artifact),
         page_type="source",
         summary=artifact.page_summary,
         sources=[raw_relative],
+        relative_path=pin_path,
     )
 
     if not artifact.metadata_only:
@@ -424,6 +524,37 @@ def obsidian_upsert(
 
 # --- Rich output rendering ---
 
+
+def _read_utf8_text_file(path: Path, *, label: str) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        console.print(f"[red]Failed to read {label} file as UTF-8:[/red] {path}")
+        raise SystemExit(1)
+    except OSError as exc:
+        console.print(f"[red]Failed to read {label} file:[/red] {exc}")
+        raise SystemExit(1)
+
+
+def _resolve_inline_or_file(
+    *,
+    inline_value: str | None,
+    file_value: Path | None,
+    inline_flag: str,
+    file_flag: str,
+    label: str,
+) -> str:
+    if inline_value is not None and file_value is not None:
+        console.print(f"[red]Use either {inline_flag} or {file_flag}, not both.[/red]")
+        raise SystemExit(1)
+    if file_value is not None:
+        return _read_utf8_text_file(file_value, label=label)
+    if inline_value is not None:
+        return inline_value
+    console.print(f"[red]Provide either {inline_flag} or {file_flag}.[/red]")
+    raise SystemExit(1)
+
+
 @main.group()
 def render() -> None:
     """Generate rich output formats (Marp slides, charts, canvas)."""
@@ -432,16 +563,37 @@ def render() -> None:
 @render.command("marp")
 @click.argument("title")
 @click.option("--path", "-p", default=".", help="Workspace root.")
-@click.option("--body", required=True, help="Slide markdown (use --- for slide separators).")
+@click.option("--body", default=None, help="Slide markdown (use --- for slide separators).")
+@click.option(
+    "--body-file",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Read slide markdown from a UTF-8 file.",
+)
 @click.option("--theme", default="default", help="Marp theme name.")
 @click.option("--summary", default=None, help="Frontmatter summary.")
 @click.option("--tag", "tags", multiple=True)
-def render_marp(title: str, path: str, body: str, theme: str, summary: str | None, tags: tuple[str, ...]) -> None:
+def render_marp(
+    title: str,
+    path: str,
+    body: str | None,
+    body_file: Path | None,
+    theme: str,
+    summary: str | None,
+    tags: tuple[str, ...],
+) -> None:
     """Generate a Marp slide deck and save as a wiki output page."""
     root = Path(path).resolve()
     config = load_config(root)
     connector = ObsidianConnector(root)
-    marp_body, marp_fm = generate_marp(title, body, theme=theme)
+    body_text = _resolve_inline_or_file(
+        inline_value=body,
+        file_value=body_file,
+        inline_flag="--body",
+        file_flag="--body-file",
+        label="body",
+    )
+    marp_body, marp_fm = generate_marp(title, body_text, theme=theme)
     page = connector.upsert_page(
         title=title,
         body=marp_body,
@@ -454,29 +606,49 @@ def render_marp(title: str, path: str, body: str, theme: str, summary: str | Non
     pages_by_type = collect_pages_by_type(config)
     write_index(config, pages_by_type)
     write_overview(config, pages_by_type)
-    append_log_entry(config, "render", title, [f"Format: marp", f"Page: {page.relative_path}"])
+    append_log_entry(config, "render", title, ["Format: marp", f"Page: {page.relative_path}"])
     console.print(f"[green]Marp deck created:[/green] {page.relative_path}")
 
 
 @render.command("chart")
 @click.argument("title")
 @click.option("--path", "-p", default=".", help="Workspace root.")
-@click.option("--script", required=True, help="Python matplotlib script.")
+@click.option("--script", default=None, help="Python matplotlib script.")
+@click.option(
+    "--script-file",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Read the matplotlib script from a UTF-8 file.",
+)
 @click.option("--summary", default=None, help="Frontmatter summary.")
 @click.option("--tag", "tags", multiple=True)
-def render_chart(title: str, path: str, script: str, summary: str | None, tags: tuple[str, ...]) -> None:
+def render_chart(
+    title: str,
+    path: str,
+    script: str | None,
+    script_file: Path | None,
+    summary: str | None,
+    tags: tuple[str, ...],
+) -> None:
     """Execute a matplotlib script and save the chart as a wiki output page."""
     root = Path(path).resolve()
     config = load_config(root)
     connector = ObsidianConnector(root)
     output_dir = config.wiki_dir / "outputs"
+    script_text = _resolve_inline_or_file(
+        inline_value=script,
+        file_value=script_file,
+        inline_flag="--script",
+        file_flag="--script-file",
+        label="script",
+    )
     try:
-        image_path = generate_chart(title, script, output_dir)
+        image_path = generate_chart(title, script_text, output_dir)
     except RuntimeError as exc:
         console.print(f"[red]Chart generation failed:[/red] {exc}")
         raise SystemExit(1)
     rel_image = str(image_path.relative_to(config.workspace_root)).replace("\\", "/")
-    body = f"![[{rel_image}]]\n\n## Script\n\n```python\n{script}\n```\n"
+    body = f"![[{rel_image}]]\n\n## Script\n\n```python\n{script_text}\n```\n"
     page = connector.upsert_page(
         title=title,
         body=body,
@@ -487,24 +659,55 @@ def render_chart(title: str, path: str, script: str, summary: str | None, tags: 
     pages_by_type = collect_pages_by_type(config)
     write_index(config, pages_by_type)
     write_overview(config, pages_by_type)
-    append_log_entry(config, "render", title, [f"Format: chart", f"Image: {rel_image}", f"Page: {page.relative_path}"])
+    append_log_entry(config, "render", title, ["Format: chart", f"Image: {rel_image}", f"Page: {page.relative_path}"])
     console.print(f"[green]Chart created:[/green] {image_path.name} → {page.relative_path}")
 
 
 @render.command("canvas")
 @click.argument("title")
 @click.option("--path", "-p", default=".", help="Workspace root.")
-@click.option("--nodes", required=True, help='JSON array of node objects (each with "text" key).')
+@click.option("--nodes", default=None, help='JSON array of node objects (each with "text" key).')
+@click.option(
+    "--nodes-file",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Read node JSON from a UTF-8 file.",
+)
 @click.option("--edges", default=None, help='Optional JSON array of edge objects (each with "from" and "to" keys).')
+@click.option(
+    "--edges-file",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Read edge JSON from a UTF-8 file.",
+)
 @click.option("--summary", default=None, help="Frontmatter summary.")
-def render_canvas(title: str, path: str, nodes: str, edges: str | None, summary: str | None) -> None:
+def render_canvas(
+    title: str,
+    path: str,
+    nodes: str | None,
+    nodes_file: Path | None,
+    edges: str | None,
+    edges_file: Path | None,
+    summary: str | None,
+) -> None:
     """Generate an Obsidian Canvas file and a companion wiki output page."""
     root = Path(path).resolve()
     config = load_config(root)
     connector = ObsidianConnector(root)
+    nodes_text = _resolve_inline_or_file(
+        inline_value=nodes,
+        file_value=nodes_file,
+        inline_flag="--nodes",
+        file_flag="--nodes-file",
+        label="nodes",
+    )
+    if edges is not None and edges_file is not None:
+        console.print("[red]Use either --edges or --edges-file, not both.[/red]")
+        raise SystemExit(1)
+    edge_text = _read_utf8_text_file(edges_file, label="edges") if edges_file is not None else edges
     try:
-        node_list = json.loads(nodes)
-        edge_list = json.loads(edges) if edges else []
+        node_list = json.loads(nodes_text)
+        edge_list = json.loads(edge_text) if edge_text else []
     except json.JSONDecodeError as exc:
         console.print(f"[red]Invalid JSON:[/red] {exc}")
         raise SystemExit(1)
@@ -533,7 +736,7 @@ def render_canvas(title: str, path: str, nodes: str, edges: str | None, summary:
     pages_by_type = collect_pages_by_type(config)
     write_index(config, pages_by_type)
     write_overview(config, pages_by_type)
-    append_log_entry(config, "render", title, [f"Format: canvas", f"Canvas: {rel_canvas}", f"Page: {page.relative_path}"])
+    append_log_entry(config, "render", title, ["Format: canvas", f"Canvas: {rel_canvas}", f"Page: {page.relative_path}"])
     console.print(f"[green]Canvas created:[/green] {rel_canvas} → {page.relative_path}")
 
 
@@ -574,11 +777,26 @@ def claude_setup(path: str, force: bool) -> None:
         for f in result["mispointed"]:
             console.print(f"  ! {f}")
         console.print("[red]Use --force to rebind them to this workspace.[/red]")
+    if result["obsolete"]:
+        console.print(f"[yellow]Obsolete managed file(s) detected:[/yellow]")
+        for f in result["obsolete"]:
+            console.print(f"  - {f}")
+        console.print("[yellow]Re-run with --force to remove them.[/yellow]")
+    if result["removed"]:
+        console.print(f"[green]Removed obsolete managed file(s):[/green]")
+        for f in result["removed"]:
+            console.print(f"  - {f}")
     if result["skipped"]:
         console.print(f"[yellow]Skipped {len(result['skipped'])} existing file(s) (use --force to overwrite):[/yellow]")
         for f in result["skipped"]:
             console.print(f"  ~ {f}")
-    if not result["installed"] and not result["skipped"] and not result["mispointed"]:
+    if (
+        not result["installed"]
+        and not result["skipped"]
+        and not result["mispointed"]
+        and not result["obsolete"]
+        and not result["removed"]
+    ):
         console.print("[dim]Nothing to install.[/dim]")
 
 
@@ -587,7 +805,7 @@ def install_claude_files(
 ) -> dict[str, list[str]]:
     """Install Claude Code commands for a wiki workspace.
 
-    Returns a dict with keys: installed, skipped, mispointed.
+    Returns a dict with keys: installed, skipped, mispointed, obsolete, removed.
     """
     templates = Path(__file__).parent / "templates"
     if not templates.is_dir():
@@ -599,12 +817,17 @@ def install_claude_files(
     installed: list[str] = []
     skipped: list[str] = []
     mispointed: list[str] = []
+    obsolete: list[str] = []
+    removed: list[str] = []
 
     # --- Global bridge commands ---
     global_dir = home / ".claude" / "commands"
     global_dir.mkdir(parents=True, exist_ok=True)
 
-    for template_file in sorted((templates / "global").iterdir()):
+    for template_file in _iter_managed_templates(
+        templates / "global",
+        obsolete=OBSOLETE_GLOBAL_COMMANDS,
+    ):
         dest = global_dir / template_file.name
         if dest.exists() and not force:
             existing = dest.read_text()
@@ -617,6 +840,16 @@ def install_claude_files(
         content = template_file.read_text().replace("{{wiki_path}}", wiki_path_str)
         dest.write_text(content)
         installed.append(str(dest))
+
+    for obsolete_name in OBSOLETE_GLOBAL_COMMANDS:
+        dest = global_dir / obsolete_name
+        if not dest.exists():
+            continue
+        if force:
+            dest.unlink()
+            removed.append(str(dest))
+        else:
+            obsolete.append(str(dest))
 
     # --- Workspace-local files ---
     workspace_claude_dir = wiki_path / ".claude" / "commands"
@@ -641,7 +874,10 @@ def install_claude_files(
         installed.append(str(settings_dest))
 
     # Workspace commands
-    for template_file in sorted((templates / "workspace" / "commands").iterdir()):
+    for template_file in _iter_managed_templates(
+        templates / "workspace" / "commands",
+        obsolete=OBSOLETE_WORKSPACE_COMMANDS,
+    ):
         dest = workspace_claude_dir / template_file.name
         if dest.exists() and not force:
             skipped.append(str(dest))
@@ -649,7 +885,23 @@ def install_claude_files(
         dest.write_text(template_file.read_text())
         installed.append(str(dest))
 
-    return {"installed": installed, "skipped": skipped, "mispointed": mispointed}
+    for obsolete_name in OBSOLETE_WORKSPACE_COMMANDS:
+        dest = workspace_claude_dir / obsolete_name
+        if not dest.exists():
+            continue
+        if force:
+            dest.unlink()
+            removed.append(str(dest))
+        else:
+            obsolete.append(str(dest))
+
+    return {
+        "installed": installed,
+        "skipped": skipped,
+        "mispointed": mispointed,
+        "obsolete": obsolete,
+        "removed": removed,
+    }
 
 
 def _resolve_raw_source(workspace_root: Path, source: str) -> Path:
@@ -663,17 +915,6 @@ def _resolve_raw_source(workspace_root: Path, source: str) -> Path:
 
     raw_relative = (workspace_root / "raw" / candidate).resolve()
     return raw_relative
-
-
-def _source_summary_from_text(text: str, title: str = "") -> str:
-    """Compatibility helper for concise one-line source summaries."""
-    cleaned = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
-    if title:
-        cleaned = re.sub(r"^#+\s+" + re.escape(title) + r"\s*", "", cleaned, flags=re.IGNORECASE)
-    summary = cleaned.strip()
-    return summary[:220] or "Minimal source content; no substantive summary available."
-
 
 if __name__ == "__main__":
     main()

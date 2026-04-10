@@ -6,6 +6,11 @@ from compile.obsidian import ObsidianConnector, SearchHit
 from compile.text import ExtractedSource, normalize_text
 
 _EXCLUDED_PAGE_TYPES = {"source", "index", "overview", "log"}
+_GENERIC_HEADINGS = {
+    "context", "introduction", "overview", "summary", "background",
+    "discussion", "conclusion", "references", "notes", "appendix",
+    "key sections", "integration notes", "likely related pages",
+}
 _STRONG_REASONS = {"exact-title", "exact-alias", "title-match", "alias-match"}
 DEFAULT_SOURCE_SYNOPSIS = "Minimal source content; no substantive summary available."
 
@@ -66,7 +71,11 @@ def _find_related_pages(
         queries.append(title.strip())
     for heading in headings[:3]:
         heading = heading.strip()
-        if heading and heading.lower() != title.strip().lower():
+        if (
+            heading
+            and heading.lower() != title.strip().lower()
+            and heading.lower() not in _GENERIC_HEADINGS
+        ):
             queries.append(heading)
     if synopsis.strip():
         queries.append(synopsis.strip())

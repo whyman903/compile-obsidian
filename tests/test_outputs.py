@@ -116,6 +116,202 @@ class TestRenderCommands:
         assert "\n# Deck\n" not in content
         assert content.rstrip().endswith("---\n# Slide 1")
 
+    def test_render_marp_reads_body_file(self, tmp_path) -> None:
+        init_workspace(tmp_path, "Test")
+        body_file = tmp_path / "deck.md"
+        body_file.write_text("# Slide 1\n---\n# Slide 2")
+        runner = CliRunner()
+
+        result = runner.invoke(
+            main,
+            ["render", "marp", "Deck", "--path", str(tmp_path), "--body-file", str(body_file)],
+        )
+
+        assert result.exit_code == 0
+        content = (tmp_path / "wiki" / "outputs" / "Deck.md").read_text()
+        assert "# Slide 2" in content
+
+    def test_render_marp_rejects_body_and_body_file(self, tmp_path) -> None:
+        init_workspace(tmp_path, "Test")
+        body_file = tmp_path / "deck.md"
+        body_file.write_text("# Slide 1")
+        runner = CliRunner()
+
+        result = runner.invoke(
+            main,
+            [
+                "render",
+                "marp",
+                "Deck",
+                "--path",
+                str(tmp_path),
+                "--body",
+                "# Slide 1",
+                "--body-file",
+                str(body_file),
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert "Use either --body or --body-file" in result.output
+
+    def test_render_chart_reads_script_file(self, tmp_path, monkeypatch) -> None:
+        init_workspace(tmp_path, "Test")
+        script_file = tmp_path / "chart.py"
+        script_file.write_text("print('chart')")
+        runner = CliRunner()
+        captured: list[str] = []
+
+        def fake_generate_chart(title: str, script: str, output_dir) -> object:
+            captured.append(script)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            image_path = output_dir / "deck.png"
+            image_path.write_bytes(b"png")
+            return image_path
+
+        monkeypatch.setattr("compile.cli.generate_chart", fake_generate_chart)
+        result = runner.invoke(
+            main,
+            ["render", "chart", "Deck", "--path", str(tmp_path), "--script-file", str(script_file)],
+        )
+
+        assert result.exit_code == 0
+        assert captured == ["print('chart')"]
+        content = (tmp_path / "wiki" / "outputs" / "Deck.md").read_text()
+        assert "print('chart')" in content
+
+    def test_render_chart_rejects_script_and_script_file(self, tmp_path) -> None:
+        init_workspace(tmp_path, "Test")
+        script_file = tmp_path / "chart.py"
+        script_file.write_text("print('chart')")
+        runner = CliRunner()
+
+        result = runner.invoke(
+            main,
+            [
+                "render",
+                "chart",
+                "Deck",
+                "--path",
+                str(tmp_path),
+                "--script",
+                "print('chart')",
+                "--script-file",
+                str(script_file),
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert "Use either --script or --script-file" in result.output
+
+    def test_render_chart_rejects_non_utf8_script_file(self, tmp_path) -> None:
+        init_workspace(tmp_path, "Test")
+        script_file = tmp_path / "chart.py"
+        script_file.write_bytes(b"\xff")
+        runner = CliRunner()
+
+        result = runner.invoke(
+            main,
+            ["render", "chart", "Deck", "--path", str(tmp_path), "--script-file", str(script_file)],
+        )
+
+        assert result.exit_code != 0
+        assert "Failed to read script file as UTF-8" in result.output
+
+    def test_render_canvas_reads_json_files(self, tmp_path) -> None:
+        init_workspace(tmp_path, "Test")
+        nodes_file = tmp_path / "nodes.json"
+        edges_file = tmp_path / "edges.json"
+        nodes_file.write_text('[{"id": "a", "text": "Node A"}, {"id": "b", "text": "Node B"}]')
+        edges_file.write_text('[{"from": "a", "to": "b", "label": "supports"}]')
+        runner = CliRunner()
+
+        result = runner.invoke(
+            main,
+            [
+                "render",
+                "canvas",
+                "Map",
+                "--path",
+                str(tmp_path),
+                "--nodes-file",
+                str(nodes_file),
+                "--edges-file",
+                str(edges_file),
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert (tmp_path / "wiki" / "outputs" / "map.canvas").exists()
+        content = (tmp_path / "wiki" / "outputs" / "Map.md").read_text()
+        assert "Nodes: 2 | Edges: 1" in content
+
+    def test_render_canvas_rejects_nodes_and_nodes_file(self, tmp_path) -> None:
+        init_workspace(tmp_path, "Test")
+        nodes_file = tmp_path / "nodes.json"
+        nodes_file.write_text('[{"text": "Node A"}]')
+        runner = CliRunner()
+
+        result = runner.invoke(
+            main,
+            [
+                "render",
+                "canvas",
+                "Map",
+                "--path",
+                str(tmp_path),
+                "--nodes",
+                '[{"text": "Node A"}]',
+                "--nodes-file",
+                str(nodes_file),
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert "Use either --nodes or --nodes-file" in result.output
+
+    def test_render_canvas_rejects_edges_and_edges_file(self, tmp_path) -> None:
+        init_workspace(tmp_path, "Test")
+        nodes_file = tmp_path / "nodes.json"
+        edges_file = tmp_path / "edges.json"
+        nodes_file.write_text('[{"text": "Node A"}]')
+        edges_file.write_text("[]")
+        runner = CliRunner()
+
+        result = runner.invoke(
+            main,
+            [
+                "render",
+                "canvas",
+                "Map",
+                "--path",
+                str(tmp_path),
+                "--nodes-file",
+                str(nodes_file),
+                "--edges",
+                "[]",
+                "--edges-file",
+                str(edges_file),
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert "Use either --edges or --edges-file" in result.output
+
+    def test_render_canvas_reports_invalid_json_from_file(self, tmp_path) -> None:
+        init_workspace(tmp_path, "Test")
+        nodes_file = tmp_path / "nodes.json"
+        nodes_file.write_text("{not valid json}")
+        runner = CliRunner()
+
+        result = runner.invoke(
+            main,
+            ["render", "canvas", "Map", "--path", str(tmp_path), "--nodes-file", str(nodes_file)],
+        )
+
+        assert result.exit_code != 0
+        assert "Invalid JSON" in result.output
+
     def test_render_canvas_rejects_invalid_payload_shape(self, tmp_path) -> None:
         init_workspace(tmp_path, "Test")
         runner = CliRunner()

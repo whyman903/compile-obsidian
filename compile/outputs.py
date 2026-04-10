@@ -51,7 +51,7 @@ def generate_chart(title: str, script: str, output_dir: Path) -> Path:
     except ModuleNotFoundError:
         raise RuntimeError(
             "matplotlib is required for chart generation. "
-            "Install it with: pip install compile-wiki\\[charts]"
+            "Install it with: pip install matplotlib"
         )
     from compile.text import slugify
 

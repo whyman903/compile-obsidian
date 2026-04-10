@@ -16,6 +16,26 @@ from compile.text import (
 )
 
 
+def _write_pdf(
+    path: Path,
+    *,
+    page_texts: list[str] | None = None,
+) -> None:
+    fitz = pytest.importorskip("fitz")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc = fitz.open()
+    page_texts = page_texts or []
+    total_pages = max(len(page_texts), 1)
+
+    for index in range(total_pages):
+        page = doc.new_page()
+        if index < len(page_texts) and page_texts[index]:
+            page.insert_text((72, 72), page_texts[index])
+
+    doc.save(path)
+    doc.close()
+
+
 class TestSlugify:
     def test_basic(self) -> None:
         assert slugify("Hello World") == "hello-world"
@@ -155,6 +175,21 @@ class TestExtractText:
         title, text = extract_text(pdf_file)
         assert title == "Paper"
         assert "PDF source" in text
+
+    def test_pdf_extracts_text(self, tmp_path: Path) -> None:
+        raw_dir = tmp_path / "raw"
+        raw_dir.mkdir()
+        pdf_file = raw_dir / "paper.pdf"
+        _write_pdf(
+            pdf_file,
+            page_texts=[
+                "This PDF contains substantive text about a durable topic and should be extracted.",
+            ],
+        )
+
+        extracted = extract_source(pdf_file)
+        assert extracted.metadata_only is False
+        assert "This PDF contains substantive text" in extracted.normalized_text
 
     def test_image_file(self, tmp_path: Path) -> None:
         img_file = tmp_path / "photo.jpg"

@@ -80,25 +80,38 @@ def mark_processed(config: Config, raw_path: Path, pages_touched: list[str]) -> 
 
 
 def get_unprocessed(config: Config) -> list[Path]:
-    from compile.text import is_supported
+    from compile.text import is_generated_raw_asset, is_supported
     state = load_state(config)
     processed = state.get("processed", {})
     return [
         path for path in sorted(config.raw_dir.rglob("*"))
         if path.is_file() and is_supported(path)
+        and not is_generated_raw_asset(path)
         and str(path.relative_to(config.workspace_root)) not in processed
     ]
 
 
 def get_status(config: Config) -> dict:
-    from compile.text import is_supported
+    from compile.text import is_generated_raw_asset, is_supported
     state = load_state(config)
-    raw_files = [p for p in config.raw_dir.rglob("*") if p.is_file() and is_supported(p)]
+    raw_files = [
+        p for p in config.raw_dir.rglob("*")
+        if p.is_file() and is_supported(p) and not is_generated_raw_asset(p)
+    ]
+    raw_relatives = {
+        str(path.relative_to(config.workspace_root))
+        for path in raw_files
+    }
+    processed_count = sum(
+        1
+        for relative in state.get("processed", {})
+        if relative in raw_relatives
+    )
     return {
         "topic": config.topic,
         "description": config.description,
         "raw_files": len(raw_files),
-        "processed": len(state.get("processed", {})),
+        "processed": processed_count,
         "unprocessed": len(get_unprocessed(config)),
         "wiki_pages": len(list(config.wiki_dir.rglob("*.md"))),
         "workspace_root": str(config.workspace_root),
@@ -154,7 +167,10 @@ def write_index(config: Config, pages_by_type: dict[str, list[dict[str, str]]]) 
         ("Articles", "articles"), ("Sources", "sources"),
         ("Maps", "maps"), ("Outputs", "outputs"), ("Other", "other"),
     ]
+    has_content = any(pages_by_type.get(key) for _, key in sections)
     index_fm = {"title": "Index", "type": "index", "created": created, "updated": now}
+    if not has_content:
+        index_fm["bootstrap"] = True
     fm_text = yaml.safe_dump(index_fm, sort_keys=False, allow_unicode=True).strip()
     lines = [
         f"---\n{fm_text}\n---\n",
@@ -191,6 +207,8 @@ def write_overview(config: Config, pages_by_type: dict[str, list[dict[str, str]]
         "created": created,
         "updated": now,
     }
+    if total == 0:
+        overview_fm["bootstrap"] = True
     fm_text = yaml.safe_dump(overview_fm, sort_keys=False, allow_unicode=True).strip()
 
     content = f"""---

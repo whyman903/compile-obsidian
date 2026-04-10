@@ -114,6 +114,17 @@ class TestState:
         unprocessed = get_unprocessed(config)
         assert all(p.name != "done.md" for p in unprocessed)
 
+    def test_generated_assets_excluded_from_unprocessed(self, tmp_path: Path) -> None:
+        config = init_workspace(tmp_path, "Test")
+        (tmp_path / "raw" / "paper.md").write_text("Paper")
+        asset = tmp_path / "raw" / "assets" / "paper" / "page-001-image-01.png"
+        asset.parent.mkdir(parents=True)
+        asset.write_bytes(b"png")
+
+        unprocessed = get_unprocessed(config)
+
+        assert [p.name for p in unprocessed] == ["paper.md"]
+
 
 class TestGetStatus:
     def test_empty_workspace(self, tmp_path: Path) -> None:
@@ -134,6 +145,38 @@ class TestGetStatus:
         status = get_status(config)
         assert status["raw_files"] == 2
         assert status["unprocessed"] == 2
+
+    def test_generated_assets_excluded_from_status(self, tmp_path: Path) -> None:
+        config = init_workspace(tmp_path, "Test")
+        (tmp_path / "raw" / "paper.md").write_text("A")
+        asset = tmp_path / "raw" / "assets" / "paper" / "page-001-image-01.png"
+        asset.parent.mkdir(parents=True)
+        asset.write_bytes(b"png")
+
+        status = get_status(config)
+
+        assert status["raw_files"] == 1
+        assert status["unprocessed"] == 1
+
+    def test_processed_count_ignores_stale_generated_asset_entries(self, tmp_path: Path) -> None:
+        config = init_workspace(tmp_path, "Test")
+        (tmp_path / "raw" / "paper.md").write_text("A")
+        asset = tmp_path / "raw" / "assets" / "paper" / "page-001-image-01.png"
+        asset.parent.mkdir(parents=True)
+        asset.write_bytes(b"png")
+        config.state_path.write_text(json.dumps({
+            "processed": {
+                "raw/paper.md": {"processed_at": "x", "pages_touched": [], "size": 1},
+                "raw/assets/paper/page-001-image-01.png": {"processed_at": "x", "pages_touched": [], "size": 3},
+            },
+            "created_at": "x",
+        }))
+
+        status = get_status(config)
+
+        assert status["raw_files"] == 1
+        assert status["processed"] == 1
+        assert status["unprocessed"] == 0
 
 
 class TestCollectPagesByType:
@@ -198,6 +241,15 @@ class TestWriteIndex:
         index = (tmp_path / "wiki" / "index.md").read_text()
         assert "[[Alpha]]" in index
         assert "Alpha summary." in index
+        assert "bootstrap" not in index
+
+    def test_empty_index_has_bootstrap_flag(self, tmp_path: Path) -> None:
+        config = init_workspace(tmp_path, "Test")
+        pages = collect_pages_by_type(config)
+        write_index(config, pages)
+
+        index = (tmp_path / "wiki" / "index.md").read_text()
+        assert "bootstrap: true" in index
 
     def test_preserves_created_date(self, tmp_path: Path) -> None:
         config = init_workspace(tmp_path, "Test")
@@ -221,6 +273,7 @@ class TestWriteOverview:
         overview = (tmp_path / "wiki" / "overview.md").read_text()
         assert "A test description" in overview
         assert "just initialized" in overview
+        assert "bootstrap: true" in overview
 
     def test_with_articles(self, tmp_path: Path) -> None:
         config = init_workspace(tmp_path, "Test")
@@ -231,6 +284,7 @@ class TestWriteOverview:
         overview = (tmp_path / "wiki" / "overview.md").read_text()
         assert "[[Alpha]]" in overview
         assert "Articles: 1" in overview
+        assert "bootstrap" not in overview
 
 
 class TestAppendLogEntry:

@@ -4,6 +4,7 @@ from datetime import date, datetime
 from dataclasses import dataclass, field
 from pathlib import Path
 import os
+import posixpath
 import re
 import shutil
 from typing import Any
@@ -28,13 +29,13 @@ IGNORED_DIRS = {
 }
 
 INVALID_FILENAME_RE = re.compile(r'[<>:"/\\|?*]+')
-STALE_OVERVIEW_MARKERS = (
+LEGACY_STALE_OVERVIEW_MARKERS = (
     "This workspace was just initialized.",
     "_Themes will emerge as sources are compiled._",
     "_Highlights will emerge as the wiki grows._",
     "_Source highlights will appear after the first ingest._",
 )
-STALE_INDEX_MARKERS = (
+LEGACY_STALE_INDEX_MARKERS = (
     "_No sources ingested yet._",
     "_No source notes yet._",
     "_Articles will appear as the wiki grows._",
@@ -60,8 +61,24 @@ def _coerce_list(value: Any) -> list[str]:
     return [str(value).strip()]
 
 
+def _normalize_raw_source_path(value: str | Path) -> str:
+    normalized = str(value).strip().replace("\\", "/")
+    if not normalized:
+        return ""
+    collapsed = posixpath.normpath(normalized)
+    return "" if collapsed == "." else collapsed
+
+
+_STOP_WORDS: set[str] = {
+    "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
+    "of", "with", "by", "from", "is", "it", "its", "was", "are", "be",
+    "this", "that", "not", "as", "has", "had", "have", "do", "does",
+    "will", "can", "may", "so", "if", "no", "we", "they", "he", "she",
+}
+
+
 def _search_terms(value: str) -> list[str]:
-    return [token.lower() for token in WORD_RE.findall(value)]
+    return [t.lower() for t in WORD_RE.findall(value) if t.lower() not in _STOP_WORDS]
 
 
 def _json_safe(value: Any) -> Any:
@@ -357,6 +374,7 @@ class ObsidianConnector:
         self._page_by_locator: dict[str, list[VaultPage]] = {}
         self._page_by_id: dict[str, VaultPage] = {}
         self._source_pages_by_source_id: dict[str, list[VaultPage]] = {}
+        self._source_pages_by_raw_path: dict[str, list[VaultPage]] = {}
         self._file_by_locator: dict[str, list[str]] = {}
 
     def inspect(self) -> VaultReport:
@@ -541,6 +559,33 @@ class ObsidianConnector:
         hits.sort(key=lambda hit: (-hit.score, hit.title.lower(), hit.relative_path))
         return hits[: max(limit, 1)]
 
+    def find_source_page_by_raw_path(self, raw_relative: str) -> VaultPage | None:
+        """Find a source page whose ``sources`` frontmatter contains *raw_relative*."""
+        self.scan()
+        normalized = _normalize_raw_source_path(raw_relative)
+        matches = self._source_pages_by_raw_path.get(normalized, [])
+        if not matches:
+            return None
+        if len(matches) > 1:
+            matches_text = ", ".join(match.relative_path for match in matches)
+            raise ValueError(
+                f"Multiple source pages claim '{normalized or raw_relative}'. "
+                f"Resolve the duplicate source notes first: {matches_text}"
+            )
+        return matches[0]
+
+    def find_source_page_by_locator(self, locator: str) -> VaultPage | None:
+        """Find a source page using the same normalized locator rules as ``upsert_page``."""
+        self.scan()
+        lookup = self._page_by_locator.get(_normalize_key(locator), [])
+        matching_type = [page for page in lookup if page.page_type == "source"]
+        if not matching_type:
+            return None
+        if len(matching_type) > 1:
+            matches = ", ".join(page.relative_path for page in matching_type[:4])
+            raise ValueError(f"Ambiguous source locator '{locator}'. Matches: {matches}")
+        return matching_type[0]
+
     def get_neighborhood(self, locator: str) -> PageNeighborhood:
         page = self.get_page(locator)
         supporting_source_pages = self._resolve_supporting_source_pages(page)
@@ -628,7 +673,11 @@ class ObsidianConnector:
         effective_summary = (summary or str(frontmatter.get("summary", "")).strip() or self._summarize_body(body)).strip()
 
         normalized_tags = sorted({item.strip() for item in (tags or _coerce_list(frontmatter.get("tags"))) if item.strip()})
-        normalized_sources = [item.strip() for item in (sources or _coerce_list(frontmatter.get("sources"))) if item.strip()]
+        normalized_sources = [
+            normalized
+            for item in (sources or _coerce_list(frontmatter.get("sources")))
+            if (normalized := _normalize_raw_source_path(item))
+        ]
         normalized_aliases = [item.strip() for item in (aliases or _coerce_list(frontmatter.get("aliases"))) if item.strip()]
 
         frontmatter["title"] = title
@@ -699,6 +748,7 @@ class ObsidianConnector:
         locator_lookup: dict[str, list[VaultPage]] = {}
         page_by_id: dict[str, VaultPage] = {}
         source_pages_by_source_id: dict[str, list[VaultPage]] = {}
+        source_pages_by_raw_path: dict[str, list[VaultPage]] = {}
         file_lookup: dict[str, list[str]] = {}
 
         for path in self._iter_all_files():
@@ -723,6 +773,10 @@ class ObsidianConnector:
             if page.page_type == "source":
                 for source_id in _coerce_list(page.frontmatter.get("source_ids")):
                     source_pages_by_source_id.setdefault(source_id, []).append(page)
+                for raw_path in _coerce_list(page.frontmatter.get("sources")):
+                    normalized_raw_path = _normalize_raw_source_path(raw_path)
+                    if normalized_raw_path:
+                        source_pages_by_raw_path.setdefault(normalized_raw_path, []).append(page)
 
         for page in pages:
             resolved_titles: set[str] = set()
@@ -755,6 +809,7 @@ class ObsidianConnector:
         self._page_by_locator = locator_lookup
         self._page_by_id = page_by_id
         self._source_pages_by_source_id = source_pages_by_source_id
+        self._source_pages_by_raw_path = source_pages_by_raw_path
         self._file_by_locator = file_lookup
         return self._pages
 
@@ -836,6 +891,7 @@ class ObsidianConnector:
         self._page_by_locator = {}
         self._page_by_id = {}
         self._source_pages_by_source_id = {}
+        self._source_pages_by_raw_path = {}
         self._file_by_locator = {}
 
     def _default_status_for_type(self, page_type: str) -> str:
@@ -930,10 +986,7 @@ class ObsidianConnector:
         reasons: list[str] = []
         title_key = _normalize_key(page.title)
         path_key = _normalize_key(page.relative_path)
-        body_lower = page.body.lower()
         summary = str(page.frontmatter.get("summary", "")).strip()
-        summary_lower = summary.lower()
-        tags_lower = [tag.lower() for tag in page.tags]
         aliases_lower = [_normalize_key(alias) for alias in page.aliases]
 
         if query_key and title_key == query_key:
@@ -985,7 +1038,7 @@ class ObsidianConnector:
             if body_overlap:
                 score += 4 * len(body_overlap)
                 reasons.append("body-match")
-            if all(term in f"{summary_lower} {body_lower}" for term in query_terms):
+            if query_terms and all(term in (summary_terms | body_term_set) for term in query_terms):
                 score += 12
                 reasons.append("all-terms")
 
@@ -1059,7 +1112,12 @@ class ObsidianConnector:
 
         files: list[Path] = []
         for current_root, dirs, filenames in os.walk(raw_root):
-            dirs[:] = [name for name in dirs if name not in IGNORED_DIRS]
+            current_path = Path(current_root)
+            dirs[:] = [
+                name for name in dirs
+                if name not in IGNORED_DIRS
+                and not (current_path == raw_root and name == "assets")
+            ]
             for filename in filenames:
                 if filename.startswith("."):
                     continue
@@ -1115,11 +1173,16 @@ class ObsidianConnector:
 
         stale_pages: list[str] = []
         for page in pages:
-            body = page.body
-            if page.page_type == "overview" and any(marker in body for marker in STALE_OVERVIEW_MARKERS):
-                stale_pages.append(page.relative_path)
-            if page.page_type == "index" and any(marker in body for marker in STALE_INDEX_MARKERS):
-                stale_pages.append(page.relative_path)
+            if page.page_type == "overview":
+                if page.frontmatter.get("bootstrap") or any(
+                    marker in page.body for marker in LEGACY_STALE_OVERVIEW_MARKERS
+                ):
+                    stale_pages.append(page.relative_path)
+            if page.page_type == "index":
+                if page.frontmatter.get("bootstrap") or any(
+                    marker in page.body for marker in LEGACY_STALE_INDEX_MARKERS
+                ):
+                    stale_pages.append(page.relative_path)
         return sorted(stale_pages)
 
     def _build_issues(

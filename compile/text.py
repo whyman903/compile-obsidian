@@ -46,11 +46,7 @@ def normalize_text(text: str) -> str:
 
 
 def _split_camel_case(value: str) -> str:
-    """Insert spaces into camelCase or PascalCase runs.
-
-    'SingerAllAnimalsAreEqual' -> 'Singer All Animals Are Equal'
-    'HTMLParser' -> 'HTML Parser'
-    """
+    """Insert spaces into camelCase or PascalCase runs."""
     value = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", value)
     value = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", value)
     return value
@@ -64,37 +60,20 @@ def _title_from_stem(stem: str) -> str:
 
 
 def fix_pdf_artifacts(text: str) -> str:
-    """Normalize common PDF extraction artifacts.
-
-    - Fix hyphenated line breaks: "word-\\nbreak" -> "wordbreak"
-    - Fix ligature issues: fi, fl, ff ligatures
-    - Collapse multiple blank lines to max 2
-    """
-    # Fix hyphenated line breaks (word- followed by newline then lowercase continuation)
+    """Normalize common PDF extraction artifacts."""
     text = re.sub(r"(\w)-\n(\w)", r"\1\2", text)
-
-    # Fix common ligature characters
-    text = text.replace("\ufb01", "fi")   # ﬁ -> fi
-    text = text.replace("\ufb02", "fl")   # ﬂ -> fl
-    text = text.replace("\ufb00", "ff")   # ﬀ -> ff
-    text = text.replace("\ufb03", "ffi")  # ﬃ -> ffi
-    text = text.replace("\ufb04", "ffl")  # ﬄ -> ffl
-
-    # Collapse multiple blank lines to max 2
+    text = text.replace("\ufb01", "fi")
+    text = text.replace("\ufb02", "fl")
+    text = text.replace("\ufb00", "ff")
+    text = text.replace("\ufb03", "ffi")
+    text = text.replace("\ufb04", "ffl")
     text = re.sub(r"\n{3,}", "\n\n", text)
-
     return text
 
 
 def is_equation_heavy(text: str) -> bool:
-    """Return True if the text contains more than 3 equation patterns.
-
-    Detects $$...$$ display equations, $...$ inline equations,
-    and lines with heavy math-symbol usage.
-    """
-    # Count display math blocks $$...$$
+    """Return True if the text contains more than 3 equation patterns."""
     display_eqs = len(re.findall(r"\$\$.+?\$\$", text, re.DOTALL))
-    # Count inline math $...$ (not preceded/followed by another $)
     inline_eqs = len(re.findall(r"(?<!\$)\$(?!\$).+?(?<!\$)\$(?!\$)", text))
     return (display_eqs + inline_eqs) > 3
 
@@ -121,17 +100,37 @@ def extract_source(path: Path) -> ExtractedSource:
 
 def _extract_pdf(path: Path) -> ExtractedSource:
     title = _title_from_stem(path.stem)
-    text = (
-        f"PDF source named {title}. "
-        "Content extraction is deferred to Anthropic's native PDF reader during analysis."
-    )
-    normalized = normalize_text(text)
+    try:
+        import fitz
+    except ModuleNotFoundError:
+        return _pdf_placeholder(title)
+
+    try:
+        doc = fitz.open(path)
+    except Exception:
+        return _pdf_placeholder(title)
+
+    page_texts: list[str] = []
+    try:
+        for page in doc:
+            raw_text = fix_pdf_artifacts(page.get_text("text") or "").strip()
+            if raw_text:
+                page_texts.append(raw_text)
+    finally:
+        doc.close()
+
+    full_text = "\n\n".join(page_texts).strip()
+    if not full_text:
+        return _pdf_placeholder(title)
+
+    paragraphs = tuple(_paragraphs_from_text(full_text))
+    normalized = normalize_text(full_text)
     return ExtractedSource(
         title=title,
         normalized_text=normalized,
-        paragraphs=(normalized,),
+        paragraphs=paragraphs or ((normalized,) if normalized else ()),
         headings=(),
-        metadata_only=True,
+        metadata_only=False,
     )
 
 
@@ -193,11 +192,26 @@ def _extract_image_stub(path: Path) -> ExtractedSource:
     size = path.stat().st_size
     suffix = path.suffix.lower().lstrip(".")
     text = (
-        f"Image asset named {title}. "
+        "Image asset registered. "
         f"Format: {suffix}. "
         f"File size: {size} bytes. "
         "Visual analysis is not available in this pipeline yet, so this ingest is metadata-only. "
         "Use the resulting source page to anchor provenance and link the image into related wiki pages."
+    )
+    normalized = normalize_text(text)
+    return ExtractedSource(
+        title=title,
+        normalized_text=normalized,
+        paragraphs=(normalized,),
+        headings=(),
+        metadata_only=True,
+    )
+
+
+def _pdf_placeholder(title: str) -> ExtractedSource:
+    text = (
+        "PDF source registered. "
+        "Content extraction is deferred to Claude's document understanding when available during analysis."
     )
     normalized = normalize_text(text)
     return ExtractedSource(
@@ -317,3 +331,12 @@ def is_supported(path_or_url: str | Path) -> bool:
         return True
     path = Path(path_or_url) if isinstance(path_or_url, str) else path_or_url
     return path.suffix.lower() in SUPPORTED_EXTENSIONS and not path.name.startswith(".")
+
+
+def is_generated_raw_asset(path_or_url: str | Path) -> bool:
+    """Return True for generated attachments stored under ``raw/assets/``."""
+    if isinstance(path_or_url, str) and is_url(path_or_url):
+        return False
+    path = Path(path_or_url) if isinstance(path_or_url, str) else path_or_url
+    parts = [part.lower() for part in path.parts]
+    return any(parts[index] == "raw" and parts[index + 1] == "assets" for index in range(len(parts) - 1))

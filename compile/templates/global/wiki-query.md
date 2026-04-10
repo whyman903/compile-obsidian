@@ -16,10 +16,22 @@ Workflow:
 
 4. Synthesize an answer with `[[wikilinks]]` citing the wiki pages that support each claim.
 
-5. Present the answer to the user.
+5. **Choose output format.** Check these triggers in order — use the first match:
+   - Comparison of 3+ items on shared dimensions → table, or `cd "{{wiki_path}}" && compile render chart` if quantitative
+   - Relationships between 4+ concepts, causal chains, actor maps, or dependencies → `cd "{{wiki_path}}" && compile render canvas`
+   - Sequential process, argument flow, or small hierarchy (3–15 nodes) → mermaid diagram in the answer
+   - Teaching explanation or presentation request → `cd "{{wiki_path}}" && compile render marp`
+   - Quantitative data, trends, or distributions → `cd "{{wiki_path}}" && compile render chart`
+   - None of the above → standard text with wikilinks
+   Always use callouts (`> [!note]`, `> [!warning]`, `> [!question]`) for key insights, caveats, or definitions regardless of format.
 
-6. Ask: "Want me to save this as a wiki output page?" If yes:
-   - Write the answer to a temporary markdown file and use `cd "{{wiki_path}}" && compile obsidian upsert "Answer Title" --page-type output --body-file /tmp/answer.md`
-   - Run `cd "{{wiki_path}}" && compile obsidian refresh` to update navigation
-   - Run `cd "{{wiki_path}}" && compile health` to catch unresolved links or navigation issues
-   - Append to `{{wiki_path}}/wiki/log.md`
+6. Present a brief answer in chat. If a rich format would add durable value, recommend it explicitly.
+
+7. Ask: "Want me to save this as a wiki output page?" Only save it if the user says yes:
+   - For canvas: write node JSON to `/tmp/nodes.json` (and optional edges to `/tmp/edges.json`) and use `cd "{{wiki_path}}" && compile render canvas ... --nodes-file /tmp/nodes.json`.
+   - For Marp: write slide markdown to `/tmp/deck.md` and use `cd "{{wiki_path}}" && compile render marp ... --body-file /tmp/deck.md`.
+   - For chart: write the matplotlib script to `/tmp/chart.py` and use `cd "{{wiki_path}}" && compile render chart ... --script-file /tmp/chart.py`.
+   - Render commands create and log the output page automatically. Run `cd "{{wiki_path}}" && compile obsidian refresh` and `cd "{{wiki_path}}" && compile health`.
+   - For markdown output: write the answer to a temporary file and use `cd "{{wiki_path}}" && compile obsidian upsert "Answer Title" --page-type output --body-file /tmp/answer.md`. Run `cd "{{wiki_path}}" && compile obsidian refresh` and `cd "{{wiki_path}}" && compile health`, then append to `{{wiki_path}}/wiki/log.md`.
+
+8. If the user declines, move on.

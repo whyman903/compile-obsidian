@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from compile.cli import main
@@ -17,6 +18,18 @@ def _write_page(path: Path, title: str, page_type: str, body: str) -> None:
         f"summary: 'Test page.'\nupdated: 2026-01-01 00:00\n---\n\n"
         f"# {title}\n\n{body}\n"
     )
+
+
+def _write_pdf(path: Path, *, text: str = "") -> None:
+    fitz = pytest.importorskip("fitz")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc = fitz.open()
+    page = doc.new_page()
+    if text:
+        page.insert_text((72, 72), text)
+    doc.save(path)
+    doc.close()
 
 
 class TestInitCommand:
@@ -157,8 +170,103 @@ class TestIngestCommand:
         result = runner.invoke(main, ["ingest", "paper.pdf", "--path", str(tmp_path)])
         assert result.exit_code == 0
         source_text = (tmp_path / "wiki" / "sources" / "Paper.md").read_text()
-        assert "PDF source named Paper." in source_text
+        assert "PDF source registered." in source_text
         assert "## Key Sections" not in source_text
+
+    def test_ingest_pdf_title_override_keeps_placeholder_summary_title_consistent(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        pdf_file = tmp_path / "raw" / "paper.pdf"
+        pdf_file.write_bytes(b"%PDF-1.4 fake content")
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["ingest", "paper.pdf", "--title", "Custom Title", "--path", str(tmp_path)])
+
+        assert result.exit_code == 0
+        source_text = (tmp_path / "wiki" / "sources" / "Custom Title.md").read_text()
+        assert "title: Custom Title" in source_text
+        assert "PDF source registered." in source_text
+        assert "PDF source named Paper." not in source_text
+
+    def test_ingest_pdf_with_text_creates_source_note_without_figure_block(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        pdf_file = tmp_path / "raw" / "paper.pdf"
+        _write_pdf(
+            pdf_file,
+            text="This PDF has enough source text to avoid the registration shell fallback.",
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["ingest", "paper.pdf", "--path", str(tmp_path)])
+
+        assert result.exit_code == 0
+        source_text = (tmp_path / "wiki" / "sources" / "Paper.md").read_text()
+        assert "This is a registration shell." not in source_text
+        assert "This PDF has enough source text" in source_text
+        assert "## Figures" not in source_text
+        assert "<!-- compile:figures:start -->" not in source_text
+
+    def test_reingest_enriched_pdf_with_historical_managed_block_preserves_note_unchanged(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        pdf_file = tmp_path / "raw" / "paper.pdf"
+        _write_pdf(
+            pdf_file,
+            text="This PDF has enough source text to extract.",
+        )
+        source_path = tmp_path / "wiki" / "sources" / "Paper.md"
+        original = (
+            "---\n"
+            "title: Paper\n"
+            "type: source\n"
+            "status: stable\n"
+            "summary: Existing enriched note.\n"
+            "sources:\n"
+            "- raw/paper.pdf\n"
+            "---\n\n"
+            "# Paper\n\n"
+            "## Synopsis\n\n"
+            "Existing enriched content.\n\n"
+            "<!-- compile:figures:start -->\n"
+            "## Figures\n\n"
+            "### Legacy Figure\n\n"
+            "![[raw/assets/paper-legacy/page-001-figure-01.png]]\n\n"
+            "<!-- compile:figures:end -->\n\n"
+            "## Provenance\n\n"
+            "- Source file: ![[raw/paper.pdf]]\n"
+        )
+        source_path.write_text(original)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["ingest", "paper.pdf", "--path", str(tmp_path)])
+
+        assert result.exit_code == 0
+        assert "Source already enriched" in result.output
+        assert source_path.read_text() == original
+
+    def test_ingest_non_raw_file_rejected(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        docs_file = tmp_path / "docs" / "note.md"
+        docs_file.parent.mkdir(parents=True, exist_ok=True)
+        docs_file.write_text("Some content outside raw/")
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["ingest", "docs/note.md", "--path", str(tmp_path)])
+
+        assert result.exit_code != 0
+        assert "raw/" in result.output
+
+    def test_ingest_image_title_override_keeps_placeholder_summary_title_consistent(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        image_file = tmp_path / "raw" / "photo.jpg"
+        image_file.write_bytes(b"\xff\xd8\xff\xe0")
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["ingest", "photo.jpg", "--title", "Custom Photo", "--path", str(tmp_path)])
+
+        assert result.exit_code == 0
+        source_text = (tmp_path / "wiki" / "sources" / "Custom Photo.md").read_text()
+        assert "title: Custom Photo" in source_text
+        assert "Image asset registered." in source_text
+        assert "Image asset named Photo." not in source_text
 
     def test_ingest_builds_stronger_source_note_and_related_context(self, tmp_path: Path) -> None:
         init_workspace(tmp_path, "Test")
@@ -299,7 +407,19 @@ class TestIngestCommand:
         assert "This is a registration shell." in source_path.read_text()
 
         # Simulate Claude enriching the source note
-        enriched_body = "---\ntitle: Paper\ntype: source\nstatus: seed\nsummary: 'A real paper.'\n---\n\n# Paper\n\n## Synopsis\n\nReal enriched content here.\n"
+        enriched_body = (
+            "---\n"
+            "title: Paper\n"
+            "type: source\n"
+            "status: seed\n"
+            "summary: 'A real paper.'\n"
+            "sources:\n"
+            "- raw/paper.pdf\n"
+            "---\n\n"
+            "# Paper\n\n"
+            "## Synopsis\n\n"
+            "Real enriched content here.\n"
+        )
         source_path.write_text(enriched_body)
 
         # Second ingest: should skip and mark processed, not overwrite
@@ -310,6 +430,206 @@ class TestIngestCommand:
         # Enriched content should be preserved
         assert "Real enriched content here." in source_path.read_text()
         assert "This is a registration shell." not in source_path.read_text()
+
+    def test_ingest_same_title_from_different_raw_files_creates_distinct_sources(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        first = tmp_path / "raw" / "a" / "paper.md"
+        second = tmp_path / "raw" / "b" / "paper.md"
+        first.parent.mkdir(parents=True)
+        second.parent.mkdir(parents=True)
+        first.write_text("# Paper\n\nFirst source content about alpha.")
+        second.write_text("# Paper\n\nSecond source content about beta.")
+
+        runner = CliRunner()
+        first_result = runner.invoke(main, ["ingest", "a/paper.md", "--path", str(tmp_path)])
+        second_result = runner.invoke(main, ["ingest", "b/paper.md", "--path", str(tmp_path)])
+
+        assert first_result.exit_code == 0
+        assert second_result.exit_code == 0
+        assert "Source already enriched" not in second_result.output
+
+        source_pages = sorted(path.name for path in (tmp_path / "wiki" / "sources").glob("*.md"))
+        assert source_pages == ["Paper (B).md", "Paper.md"]
+        assert "raw/a/paper.md" in (tmp_path / "wiki" / "sources" / "Paper.md").read_text()
+        assert "raw/b/paper.md" in (tmp_path / "wiki" / "sources" / "Paper (B).md").read_text()
+
+    def test_ingest_normalized_title_collision_does_not_overwrite_existing_source(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        first = tmp_path / "raw" / "first.md"
+        second = tmp_path / "raw" / "second.md"
+        first.write_text("# Paper\n\nFirst source content.")
+        second.write_text("# paper\n\nSecond source content.")
+
+        runner = CliRunner()
+        first_result = runner.invoke(main, ["ingest", "first.md", "--path", str(tmp_path)])
+        second_result = runner.invoke(main, ["ingest", "second.md", "--path", str(tmp_path)])
+
+        assert first_result.exit_code == 0
+        assert second_result.exit_code == 0
+
+        pages = sorted((tmp_path / "wiki" / "sources").glob("*.md"))
+        assert len(pages) == 2
+        contents = [path.read_text() for path in pages]
+        assert any("First source content." in content and "raw/first.md" in content for content in contents)
+        assert any("Second source content." in content and "raw/second.md" in content for content in contents)
+
+    def test_ingest_fails_when_multiple_source_pages_share_exact_title(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        raw_file = tmp_path / "raw" / "paper.md"
+        raw_file.write_text("# Paper\n\nSource content.")
+
+        first = tmp_path / "wiki" / "sources" / "Paper.md"
+        first.write_text(
+            "---\n"
+            "title: Paper\n"
+            "type: source\n"
+            "status: seed\n"
+            "summary: First source.\n"
+            "sources:\n"
+            "- raw/a.md\n"
+            "---\n\n"
+            "# Paper\n\n"
+            "First duplicate title.\n"
+        )
+        second = tmp_path / "wiki" / "sources" / "Paper Copy.md"
+        second.write_text(
+            "---\n"
+            "title: Paper\n"
+            "type: source\n"
+            "status: seed\n"
+            "summary: Second source.\n"
+            "sources:\n"
+            "- raw/b.md\n"
+            "---\n\n"
+            "# Paper\n\n"
+            "Second duplicate title.\n"
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["ingest", "paper.md", "--path", str(tmp_path)])
+
+        assert result.exit_code != 0
+        assert "Multiple source pages titled 'Paper' exist" in result.output
+
+
+    def test_reingest_with_different_title_reuses_existing_page(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        raw_file = tmp_path / "raw" / "paper.md"
+        raw_file.parent.mkdir(parents=True, exist_ok=True)
+        raw_file.write_text("# Paper\n\nOriginal content about something important.")
+
+        runner = CliRunner()
+        first = runner.invoke(main, ["ingest", "paper.md", "--path", str(tmp_path)])
+        assert first.exit_code == 0
+
+        # Re-ingest with a different title — should find the existing page by raw path,
+        # not create a duplicate.  The enrichment guard will skip the overwrite.
+        second = runner.invoke(main, ["ingest", "paper.md", "--title", "Better Title", "--path", str(tmp_path)])
+        assert second.exit_code == 0
+        assert "Source already enriched" in second.output
+
+        source_pages = list((tmp_path / "wiki" / "sources").glob("*.md"))
+        assert len(source_pages) == 1, f"Expected 1 source page, got {[p.name for p in source_pages]}"
+        assert "raw/paper.md" in source_pages[0].read_text()
+
+    def test_reingest_shell_with_different_title_renames_page(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        pdf_file = tmp_path / "raw" / "paper.pdf"
+        pdf_file.parent.mkdir(parents=True, exist_ok=True)
+        # Write a fake PDF that produces a registration shell
+        pdf_file.write_bytes(b"%PDF-1.4 fake")
+
+        runner = CliRunner()
+        first = runner.invoke(main, ["ingest", "paper.pdf", "--path", str(tmp_path)])
+        assert first.exit_code == 0
+        assert (tmp_path / "wiki" / "sources" / "Paper.md").exists()
+
+        # Re-ingest the same shell with a title override — should replace the shell
+        # at a new file path matching the title, not leave a Paper.md with mismatched title.
+        second = runner.invoke(main, ["ingest", "paper.pdf", "--title", "Real Title", "--path", str(tmp_path)])
+        assert second.exit_code == 0
+
+        source_pages = sorted(p.name for p in (tmp_path / "wiki" / "sources").glob("*.md"))
+        assert len(source_pages) == 1, f"Expected 1 source page, got {source_pages}"
+        assert source_pages[0] == "Real Title.md"
+        content = (tmp_path / "wiki" / "sources" / "Real Title.md").read_text()
+        assert "raw/paper.pdf" in content
+        assert "title: Real Title" in content
+
+    def test_ingest_fails_when_multiple_source_pages_claim_same_raw_file(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        raw_file = tmp_path / "raw" / "paper.md"
+        raw_file.write_text("# Paper\n\nSource content.")
+
+        first = tmp_path / "wiki" / "sources" / "Paper.md"
+        first.write_text(
+            "---\n"
+            "title: Paper\n"
+            "type: source\n"
+            "status: seed\n"
+            "summary: First source.\n"
+            "sources:\n"
+            "- raw/paper.md\n"
+            "---\n\n"
+            "# Paper\n\n"
+            "First duplicate.\n"
+        )
+        second = tmp_path / "wiki" / "sources" / "Paper Copy.md"
+        second.write_text(
+            "---\n"
+            "title: Paper Copy\n"
+            "type: source\n"
+            "status: seed\n"
+            "summary: Second source.\n"
+            "sources:\n"
+            "- raw/paper.md\n"
+            "---\n\n"
+            "# Paper Copy\n\n"
+            "Second duplicate.\n"
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["ingest", "paper.md", "--path", str(tmp_path)])
+
+        assert result.exit_code != 0
+        assert "Multiple source pages claim 'raw/paper.md'" in result.output
+
+    def test_ingest_reuses_existing_source_when_frontmatter_raw_path_uses_backslashes(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        raw_file = tmp_path / "raw" / "paper.md"
+        raw_file.write_text("# Paper\n\nSource content.")
+        source_path = tmp_path / "wiki" / "sources" / "Paper.md"
+        original = (
+            "---\n"
+            "title: Paper\n"
+            "type: source\n"
+            "status: seed\n"
+            "summary: Existing source.\n"
+            "sources:\n"
+            "- raw\\paper.md\n"
+            "---\n\n"
+            "# Paper\n\n"
+            "Existing enriched body.\n"
+        )
+        source_path.write_text(original)
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["ingest", "paper.md", "--path", str(tmp_path)])
+
+        assert result.exit_code == 0
+        assert "Source already enriched" in result.output
+        assert source_path.read_text() == original
+        assert sorted(path.name for path in (tmp_path / "wiki" / "sources").glob("*.md")) == ["Paper.md"]
+
+
+class TestRemovedSourceCommand:
+    def test_source_packet_command_is_removed(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        runner = CliRunner()
+        result = runner.invoke(main, ["source", "packet", "paper.pdf", "--path", str(tmp_path)])
+
+        assert result.exit_code != 0
+        assert "No such command 'source'" in result.output
 
 
 class TestObsidianInspectCommand:
