@@ -146,6 +146,24 @@ class TestGetStatus:
         assert status["raw_files"] == 2
         assert status["unprocessed"] == 2
 
+    def test_counts_needs_document_review(self, tmp_path: Path) -> None:
+        config = init_workspace(tmp_path, "Test")
+        (tmp_path / "wiki" / "sources" / "paper.md").write_text(
+            "---\n"
+            "title: Paper\n"
+            "type: source\n"
+            "status: stable\n"
+            "summary: Extracted PDF note.\n"
+            "review_status: needs_document_review\n"
+            "---\n\n"
+            "# Paper\n\n"
+            "Review me.\n"
+        )
+
+        status = get_status(config)
+
+        assert status["needs_document_review"] == 1
+
     def test_generated_assets_excluded_from_status(self, tmp_path: Path) -> None:
         config = init_workspace(tmp_path, "Test")
         (tmp_path / "raw" / "paper.md").write_text("A")

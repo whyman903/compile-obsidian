@@ -103,6 +103,27 @@ class TestBuildHealthReport:
         report = build_health_report(tmp_path)
         assert report["metrics"]["raw_files_without_source_notes"] >= 1
 
+    def test_needs_document_review_surfaces_in_content_health(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        (tmp_path / "raw" / "paper.pdf").write_bytes(b"%PDF-1.4 fake")
+        _write_page(
+            tmp_path / "wiki" / "sources" / "paper.md",
+            "Paper",
+            "source",
+            "See [[raw/paper.pdf]] for provenance.",
+            status="stable",
+            summary='"Extracted source note."',
+            review_status="needs_document_review",
+            extraction_method="pymupdf_text",
+        )
+        _refresh_nav(tmp_path)
+
+        report = build_health_report(tmp_path)
+
+        assert report["metrics"]["needs_document_review"] == 1
+        assert report["content_health"]["status"] == "warn"
+        assert any(issue["code"] == "needs_document_review" for issue in report["issues"])
+
 
 class TestWriteHealthSnapshot:
     def test_writes_file(self, tmp_path: Path) -> None:

@@ -9,6 +9,7 @@ from rich.console import Console
 from rich.table import Table
 
 from compile.config import load_config
+from compile.dates import now_frontmatter
 from compile.fetch import fetch_url
 from compile.ingest import (
     build_ingest_artifact,
@@ -16,7 +17,21 @@ from compile.ingest import (
 )
 from compile.obsidian import ObsidianConnector
 from compile.outputs import generate_canvas, generate_chart, generate_marp
-from compile.text import extract_source, is_url
+from compile.pdf_artifacts import (
+    align_artifact_raw_path,
+    build_pdf_artifact,
+    compute_sha256,
+    extracted_source_from_artifact,
+    load_pdf_artifact,
+    save_pdf_artifact,
+)
+from compile.search_index import (
+    rebuild_search_index,
+    search_index_exists,
+    search_pdf_index,
+    sync_pdf_search_index,
+)
+from compile.text import extract_source, is_url, title_from_path
 from compile.workspace import (
     append_log_entry,
     collect_pages_by_type,
@@ -142,7 +157,16 @@ def status() -> None:
     table = Table(title=info["topic"])
     table.add_column("", style="bold")
     table.add_column("")
-    for key in ("topic", "description", "workspace_root", "raw_files", "processed", "unprocessed", "wiki_pages"):
+    for key in (
+        "topic",
+        "description",
+        "workspace_root",
+        "raw_files",
+        "processed",
+        "unprocessed",
+        "needs_document_review",
+        "wiki_pages",
+    ):
         table.add_row(key.replace("_", " ").title(), str(info[key]))
     console.print(table)
 
@@ -186,8 +210,13 @@ def ingest(source: str, path: str, title: str | None, images: bool) -> None:
 
     connector = ObsidianConnector(config.workspace_root)
     raw_relative = str(raw_path.relative_to(config.workspace_root)).replace("\\", "/")
-    extracted = extract_source(raw_path)
-    desired_title = title or extracted.title
+    preloaded_extracted = None
+    pdf_artifact = None
+    if raw_path.suffix.lower() == ".pdf":
+        desired_title = title or title_from_path(raw_path)
+    else:
+        preloaded_extracted = extract_source(raw_path)
+        desired_title = title or preloaded_extracted.title
     try:
         effective_title, existing_source_page = _resolve_source_title(
             connector,
@@ -201,15 +230,23 @@ def ingest(source: str, path: str, title: str | None, images: bool) -> None:
     # Guard against re-clobbering an enriched source note.
     # If a source page already exists for this title and has been enriched
     # beyond the registration shell, skip the overwrite and mark it processed.
-    if (
-        existing_source_page is not None
-        and "This is a registration shell." not in existing_source_page.body
-    ):
+    if existing_source_page is not None and _should_preserve_existing_source_page(existing_source_page):
+        if raw_path.suffix.lower() == ".pdf":
+            _refresh_pdf_index_for_source_page(
+                config,
+                raw_path=raw_path,
+                raw_relative=raw_relative,
+                page=existing_source_page,
+            )
         mark_processed(config, raw_path, [existing_source_page.relative_path])
         console.print(f"[yellow]Source already enriched:[/yellow] {existing_source_page.relative_path}")
         console.print("  Marked as processed. Skipping re-ingest.")
         return
 
+    if preloaded_extracted is not None:
+        extracted = preloaded_extracted
+    else:
+        extracted, pdf_artifact = _extract_for_ingest(config, raw_path, raw_relative)
     artifact = build_ingest_artifact(
         raw_relative=raw_relative,
         extracted=extracted,
@@ -233,10 +270,21 @@ def ingest(source: str, path: str, title: str | None, images: bool) -> None:
         summary=artifact.page_summary,
         sources=[raw_relative],
         relative_path=pin_path,
+        extra_frontmatter=_source_review_frontmatter(extracted),
     )
 
     if not artifact.metadata_only:
         mark_processed(config, raw_path, [page.relative_path])
+    if raw_path.suffix.lower() == ".pdf":
+        sync_pdf_search_index(
+            config,
+            raw_relative=raw_relative,
+            artifact=pdf_artifact,
+            display_title=page.title,
+            display_relative_path=page.relative_path,
+            page_type=page.page_type,
+            page_summary=str(page.frontmatter.get("summary") or ""),
+        )
     pages_by_type = collect_pages_by_type(config)
     write_index(config, pages_by_type)
     write_overview(config, pages_by_type)
@@ -251,6 +299,8 @@ def ingest(source: str, path: str, title: str | None, images: bool) -> None:
     console.print(f"[green]Source note created:[/green] {page.relative_path}")
     if artifact.metadata_only:
         console.print("  Source content could not be extracted. Read the raw file and replace this note.")
+    elif artifact.needs_document_review:
+        console.print("  Built from local PDF text extraction. Review the raw document before treating it as complete.")
     if artifact.related_pages:
         console.print("  Review these existing pages next:")
         for related_page in artifact.related_pages:
@@ -340,8 +390,20 @@ def obsidian_inspect(path: str, json_output: bool) -> None:
 @click.option("--limit", "-n", default=10)
 def obsidian_search(query: str, path: str, limit: int) -> None:
     """Search wiki pages."""
-    connector = ObsidianConnector(Path(path).resolve())
-    hits = connector.search(query, limit=limit)
+    root = Path(path).resolve()
+    connector = ObsidianConnector(root)
+    if connector.layout == "compile_workspace":
+        config = load_config(connector.root)
+        if search_index_exists(config):
+            hits = _merge_search_hits(
+                primary=search_pdf_index(config, query, limit=limit, connector=connector),
+                secondary=connector.search(query, limit=limit),
+                limit=limit,
+            )
+        else:
+            hits = connector.search(query, limit=limit)
+    else:
+        hits = connector.search(query, limit=limit)
     if not hits:
         console.print(f"[yellow]No matches:[/yellow] {query}")
         return
@@ -520,6 +582,68 @@ def obsidian_upsert(
             pass  # non-fatal: source tracking is best-effort
 
     console.print(f"[green]Upserted[/green] {page.relative_path}")
+
+
+@main.group()
+def review() -> None:
+    """Review and lifecycle commands for source pages."""
+
+
+@review.command("mark-reviewed")
+@click.argument("locator")
+@click.option("--path", "-p", default=".")
+def review_mark_reviewed(locator: str, path: str) -> None:
+    """Mark a source page as document-reviewed."""
+    connector = ObsidianConnector(Path(path).resolve())
+    try:
+        page = connector.get_page(locator)
+    except (FileNotFoundError, ValueError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise SystemExit(1)
+
+    if page.page_type != "source":
+        console.print("[red]Only source pages can be marked reviewed.[/red]")
+        raise SystemExit(1)
+
+    updated = connector.upsert_page(
+        title=page.title,
+        body=page.body,
+        page_type=page.page_type,
+        tags=list(page.tags),
+        sources=_coerce_frontmatter_list(page.frontmatter.get("sources")),
+        aliases=list(page.aliases),
+        summary=str(page.frontmatter.get("summary") or "") or None,
+        relative_path=page.relative_path,
+        extra_frontmatter={
+            "review_status": "reviewed",
+            "reviewed_at": now_frontmatter(),
+        },
+        ensure_title_heading=False,
+    )
+    console.print(f"[green]Marked reviewed:[/green] {updated.relative_path}")
+
+
+@main.group()
+def index() -> None:
+    """Build and maintain local retrieval indexes."""
+
+
+@index.command("rebuild")
+@click.option("--path", "-p", default=".")
+def index_rebuild(path: str) -> None:
+    """Rebuild PDF extraction sidecars and the local search index."""
+    config = load_config(Path(path).resolve())
+    stats = rebuild_search_index(config)
+    relative_db = str(config.search_index_path.relative_to(config.workspace_root)).replace("\\", "/")
+    console.print(f"[green]Rebuilt search index:[/green] {relative_db}")
+    console.print(f"  PDFs scanned: {stats['pdfs_scanned']}")
+    console.print(f"  Reused sidecars: {stats['reused_sidecars']}")
+    console.print(f"  Created sidecars: {stats['created_sidecars']}")
+    console.print(f"  Deleted orphan sidecars: {stats['deleted_orphans']}")
+    console.print(f"  Indexed pages: {stats['indexed_pages']}")
+    console.print(f"  Indexed chunks: {stats['indexed_chunks']}")
+    if stats["unextractable_pdfs"]:
+        console.print(f"  PDFs with no usable text: {stats['unextractable_pdfs']}")
 
 
 # --- Rich output rendering ---
@@ -915,6 +1039,83 @@ def _resolve_raw_source(workspace_root: Path, source: str) -> Path:
 
     raw_relative = (workspace_root / "raw" / candidate).resolve()
     return raw_relative
+
+
+def _extract_for_ingest(config, raw_path: Path, raw_relative: str):
+    if raw_path.suffix.lower() != ".pdf":
+        return extract_source(raw_path), None
+
+    raw_sha256 = compute_sha256(raw_path)
+    try:
+        artifact = load_pdf_artifact(config, raw_sha256)
+    except (json.JSONDecodeError, ValueError):
+        artifact = None
+    if artifact is not None:
+        artifact = align_artifact_raw_path(config, artifact, raw_relative)
+        return extracted_source_from_artifact(artifact), artifact
+
+    extracted = extract_source(raw_path)
+    artifact = None
+    if not extracted.metadata_only and extracted.page_texts:
+        artifact = build_pdf_artifact(
+            raw_relative=raw_relative,
+            raw_sha256=raw_sha256,
+            extracted=extracted,
+        )
+        save_pdf_artifact(config, artifact)
+    return extracted, artifact
+
+
+def _source_review_frontmatter(extracted) -> dict[str, str] | None:
+    if extracted.requires_document_review and extracted.extraction_method:
+        return {
+            "review_status": "needs_document_review",
+            "extraction_method": extracted.extraction_method,
+        }
+    return None
+
+
+def _should_preserve_existing_source_page(page) -> bool:
+    if "This is a registration shell." in page.body:
+        return False
+    return str(page.frontmatter.get("review_status") or "").strip() != "needs_document_review"
+
+
+def _refresh_pdf_index_for_source_page(config, *, raw_path: Path, raw_relative: str, page) -> None:
+    _, pdf_artifact = _extract_for_ingest(config, raw_path, raw_relative)
+    sync_pdf_search_index(
+        config,
+        raw_relative=raw_relative,
+        artifact=pdf_artifact,
+        display_title=page.title,
+        display_relative_path=page.relative_path,
+        page_type=page.page_type,
+        page_summary=str(page.frontmatter.get("summary") or ""),
+    )
+
+
+def _coerce_frontmatter_list(value) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    return [str(value)]
+
+
+def _merge_search_hits(*, primary, secondary, limit: int):
+    merged = []
+    seen: set[str] = set()
+    for collection in (primary, secondary):
+        for hit in collection:
+            if hit.relative_path in seen:
+                continue
+            seen.add(hit.relative_path)
+            merged.append(hit)
+            if len(merged) >= max(limit, 1):
+                return merged
+    return merged
 
 if __name__ == "__main__":
     main()

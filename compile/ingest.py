@@ -25,6 +25,8 @@ class IngestArtifact:
     integration_notes: list[str]
     raw_relative: str
     metadata_only: bool
+    extraction_method: str | None
+    needs_document_review: bool
 
 
 def build_ingest_artifact(
@@ -54,6 +56,8 @@ def build_ingest_artifact(
         integration_notes=_integration_notes(related_pages),
         raw_relative=raw_relative,
         metadata_only=extracted.metadata_only,
+        extraction_method=extracted.extraction_method,
+        needs_document_review=extracted.requires_document_review,
     )
 
 
@@ -110,6 +114,16 @@ def render_source_body(artifact: IngestArtifact) -> str:
         "",
         artifact.synopsis,
     ]
+
+    if artifact.needs_document_review:
+        method = artifact.extraction_method or "local_text_extraction"
+        lines.extend([
+            "",
+            "## Review Status",
+            "",
+            f"This source note was built from local PDF text extraction (`{method}`). "
+            "It still needs document-level review for layout, tables, figures, captions, and reading order.",
+        ])
 
     if artifact.key_sections:
         lines.extend([

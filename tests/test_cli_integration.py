@@ -8,6 +8,7 @@ import pytest
 from click.testing import CliRunner
 
 from compile.cli import main
+from compile.pdf_artifacts import compute_sha256
 from compile.workspace import init_workspace
 
 
@@ -172,6 +173,8 @@ class TestIngestCommand:
         source_text = (tmp_path / "wiki" / "sources" / "Paper.md").read_text()
         assert "PDF source registered." in source_text
         assert "## Key Sections" not in source_text
+        assert "review_status:" not in source_text
+        assert not (tmp_path / ".compile" / "extract").exists()
 
     def test_ingest_pdf_title_override_keeps_placeholder_summary_title_consistent(self, tmp_path: Path) -> None:
         init_workspace(tmp_path, "Test")
@@ -204,6 +207,60 @@ class TestIngestCommand:
         assert "This PDF has enough source text" in source_text
         assert "## Figures" not in source_text
         assert "<!-- compile:figures:start -->" not in source_text
+        assert "review_status: needs_document_review" in source_text
+        assert "extraction_method: pymupdf_text" in source_text
+        assert "## Review Status" in source_text
+
+        sidecar = tmp_path / ".compile" / "extract" / f"{compute_sha256(pdf_file)}.json"
+        assert sidecar.exists()
+        payload = json.loads(sidecar.read_text())
+        assert payload["schema_version"] == 1
+        assert payload["raw_path"] == "raw/paper.pdf"
+        assert payload["raw_sha256"] == compute_sha256(pdf_file)
+        assert payload["extractor_name"] == "pymupdf_text"
+        assert payload["requires_document_review"] is True
+        assert "chunks" not in payload
+        assert payload["pages"][0]["page_number"] == 1
+        assert "This PDF has enough source text" in payload["pages"][0]["text"]
+
+    def test_reingest_unchanged_pdf_reuses_existing_sidecar(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        pdf_file = tmp_path / "raw" / "paper.pdf"
+        _write_pdf(pdf_file, text="Reusable extracted PDF text.")
+
+        runner = CliRunner()
+        first = runner.invoke(main, ["ingest", "paper.pdf", "--path", str(tmp_path)])
+        assert first.exit_code == 0
+
+        sidecar = tmp_path / ".compile" / "extract" / f"{compute_sha256(pdf_file)}.json"
+        payload = json.loads(sidecar.read_text())
+        payload["extracted_at"] = "sentinel"
+        sidecar.write_text(json.dumps(payload, indent=2))
+
+        (tmp_path / "wiki" / "sources" / "Paper.md").unlink()
+        second = runner.invoke(main, ["ingest", "paper.pdf", "--path", str(tmp_path)])
+
+        assert second.exit_code == 0
+        reloaded = json.loads(sidecar.read_text())
+        assert reloaded["extracted_at"] == "sentinel"
+        assert (tmp_path / "wiki" / "sources" / "Paper.md").exists()
+
+    def test_reingest_unreviewed_extracted_pdf_refreshes_source_note_when_raw_changes(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        pdf_file = tmp_path / "raw" / "paper.pdf"
+        _write_pdf(pdf_file, text="Original extracted PDF text.")
+
+        runner = CliRunner()
+        first = runner.invoke(main, ["ingest", "paper.pdf", "--path", str(tmp_path)])
+        assert first.exit_code == 0
+
+        _write_pdf(pdf_file, text="Updated extracted PDF text.")
+        second = runner.invoke(main, ["ingest", "paper.pdf", "--path", str(tmp_path)])
+
+        assert second.exit_code == 0
+        source_text = (tmp_path / "wiki" / "sources" / "Paper.md").read_text()
+        assert "Updated extracted PDF text." in source_text
+        assert "Original extracted PDF text." not in source_text
 
     def test_reingest_enriched_pdf_with_historical_managed_block_preserves_note_unchanged(self, tmp_path: Path) -> None:
         init_workspace(tmp_path, "Test")
@@ -621,6 +678,97 @@ class TestIngestCommand:
         assert source_path.read_text() == original
         assert sorted(path.name for path in (tmp_path / "wiki" / "sources").glob("*.md")) == ["Paper.md"]
 
+    def test_review_mark_reviewed_updates_review_frontmatter_and_preserves_body(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        source_path = tmp_path / "wiki" / "sources" / "Paper.md"
+        source_path.write_text(
+            "---\n"
+            "title: Paper\n"
+            "type: source\n"
+            "status: stable\n"
+            "summary: Extracted source note.\n"
+            "sources:\n"
+            "- raw/paper.pdf\n"
+            "review_status: needs_document_review\n"
+            "extraction_method: pymupdf_text\n"
+            "---\n\n"
+            "# Paper\n\n"
+            "## Synopsis\n\n"
+            "Preserve this body exactly.\n"
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["review", "mark-reviewed", "Paper", "--path", str(tmp_path)])
+
+        assert result.exit_code == 0
+        updated = source_path.read_text()
+        assert "review_status: reviewed" in updated
+        assert "reviewed_at:" in updated
+        assert "Preserve this body exactly." in updated
+        assert "extraction_method: pymupdf_text" in updated
+
+    def test_review_mark_reviewed_does_not_rewrite_body_without_heading(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        source_path = tmp_path / "wiki" / "sources" / "Paper.md"
+        source_path.write_text(
+            "---\n"
+            "title: Paper\n"
+            "type: source\n"
+            "status: stable\n"
+            "summary: Extracted source note.\n"
+            "review_status: needs_document_review\n"
+            "---\n\n"
+            "Body without an h1 heading.\n"
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["review", "mark-reviewed", "Paper", "--path", str(tmp_path)])
+
+        assert result.exit_code == 0
+        updated = source_path.read_text()
+        assert "\n\nBody without an h1 heading.\n" in updated
+        assert "# Paper" not in updated
+
+    def test_obsidian_upsert_preserves_existing_review_frontmatter(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        source_path = tmp_path / "wiki" / "sources" / "Paper.md"
+        source_path.write_text(
+            "---\n"
+            "title: Paper\n"
+            "type: source\n"
+            "status: stable\n"
+            "summary: Existing reviewed source.\n"
+            "sources:\n"
+            "- raw/paper.pdf\n"
+            "review_status: reviewed\n"
+            "reviewed_at: 2026-01-01 00:00\n"
+            "---\n\n"
+            "# Paper\n\n"
+            "Original body.\n"
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            [
+                "obsidian",
+                "upsert",
+                "Paper",
+                "--path",
+                str(tmp_path),
+                "--page-type",
+                "source",
+                "--body",
+                "# Paper\n\nUpdated body.\n",
+            ],
+        )
+
+        assert result.exit_code == 0
+        updated = source_path.read_text()
+        assert "review_status: reviewed" in updated
+        assert "reviewed_at: 2026-01-01 00:00" in updated
+        assert "Updated body." in updated
+
 
 class TestRemovedSourceCommand:
     def test_source_packet_command_is_removed(self, tmp_path: Path) -> None:
@@ -677,6 +825,108 @@ class TestObsidianSearchCommand:
 
         assert result.exit_code == 0
         assert "Unique Article" in result.output
+
+    def test_index_rebuild_reuses_sidecars_and_deletes_orphans(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        first_pdf = tmp_path / "raw" / "first.pdf"
+        second_pdf = tmp_path / "raw" / "second.pdf"
+        _write_pdf(first_pdf, text="First indexed PDF text.")
+        _write_pdf(second_pdf, text="Second indexed PDF text.")
+
+        runner = CliRunner()
+        first_ingest = runner.invoke(main, ["ingest", "first.pdf", "--path", str(tmp_path)])
+        assert first_ingest.exit_code == 0
+
+        orphan = tmp_path / ".compile" / "extract" / ("0" * 64 + ".json")
+        orphan.parent.mkdir(parents=True, exist_ok=True)
+        orphan.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "raw_path": "raw/missing.pdf",
+                    "raw_sha256": "0" * 64,
+                    "media_type": "application/pdf",
+                    "extractor_name": "pymupdf_text",
+                    "extractor_version": "1.27.2.2",
+                    "extracted_at": "2026-01-01T00:00:00+00:00",
+                    "extraction_mode": "text",
+                    "requires_document_review": True,
+                    "warnings": [],
+                    "pages": [{"page_number": 1, "text": "orphaned"}],
+                },
+                indent=2,
+            )
+        )
+
+        rebuild = runner.invoke(main, ["index", "rebuild", "--path", str(tmp_path)])
+
+        assert rebuild.exit_code == 0
+        assert "Reused sidecars: 1" in rebuild.output
+        assert "Created sidecars: 1" in rebuild.output
+        assert "Deleted orphan sidecars: 1" in rebuild.output
+        assert (tmp_path / ".compile" / "index" / "search.db").exists()
+        assert not orphan.exists()
+
+    def test_search_uses_indexed_pdf_chunks_when_index_exists(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        pdf_file = tmp_path / "raw" / "paper.pdf"
+        _write_pdf(
+            pdf_file,
+            text=(
+                "Planner executor retrieval depends on local chunked search over extracted PDF text. "
+                "This sentence is distinctive enough to appear in the search snippet."
+            ),
+        )
+
+        runner = CliRunner()
+        ingest = runner.invoke(main, ["ingest", "paper.pdf", "--path", str(tmp_path)])
+        result = runner.invoke(
+            main,
+            ["obsidian", "search", "planner executor retrieval", "--path", str(tmp_path)],
+        )
+
+        assert ingest.exit_code == 0
+        assert result.exit_code == 0
+        assert (tmp_path / ".compile" / "index" / "search.db").exists()
+        assert "Paper" in result.output
+        assert "Planner executor retrieval" in result.output
+
+    def test_search_still_finds_regular_wiki_pages_when_index_exists(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        _write_page(
+            tmp_path / "wiki" / "articles" / "friendship.md",
+            "Friendship",
+            "article",
+            "A durable article about trust and reciprocity.",
+        )
+        pdf_file = tmp_path / "raw" / "paper.pdf"
+        _write_pdf(pdf_file, text="Indexed PDF text about retrieval.")
+
+        runner = CliRunner()
+        runner.invoke(main, ["ingest", "paper.pdf", "--path", str(tmp_path)])
+        runner.invoke(main, ["index", "rebuild", "--path", str(tmp_path)])
+        result = runner.invoke(main, ["obsidian", "search", "Friendship", "--path", str(tmp_path)])
+
+        assert result.exit_code == 0
+        assert "Friendship" in result.output
+
+    def test_search_uses_live_source_page_metadata_after_manual_edit(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        pdf_file = tmp_path / "raw" / "paper.pdf"
+        _write_pdf(pdf_file, text="Searchable corpus text.")
+
+        runner = CliRunner()
+        ingest = runner.invoke(main, ["ingest", "paper.pdf", "--path", str(tmp_path)])
+        assert ingest.exit_code == 0
+
+        page_path = tmp_path / "wiki" / "sources" / "Paper.md"
+        updated = page_path.read_text().replace("title: Paper", "title: Revised Paper")
+        page_path.write_text(updated.replace("# Paper", "# Revised Paper"))
+
+        result = runner.invoke(main, ["obsidian", "search", "Searchable corpus", "--path", str(tmp_path)])
+
+        assert result.exit_code == 0
+        assert "Revised Paper" in result.output
 
 
 class TestObsidianPageCommand:

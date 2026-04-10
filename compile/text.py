@@ -28,12 +28,22 @@ HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 
 
 @dataclass(frozen=True)
+class ExtractedPageText:
+    page_number: int
+    text: str
+
+
+@dataclass(frozen=True)
 class ExtractedSource:
     title: str
     normalized_text: str
     paragraphs: tuple[str, ...]
     headings: tuple[str, ...]
     metadata_only: bool
+    extraction_method: str | None = None
+    requires_document_review: bool = False
+    warnings: tuple[str, ...] = ()
+    page_texts: tuple[ExtractedPageText, ...] = ()
 
 
 def slugify(value: str) -> str:
@@ -57,6 +67,10 @@ def _title_from_stem(stem: str) -> str:
     name = stem.replace("-", " ").replace("_", " ").strip()
     name = _split_camel_case(name)
     return normalize_text(name).title()
+
+
+def title_from_path(path: Path) -> str:
+    return _title_from_stem(path.stem)
 
 
 def fix_pdf_artifacts(text: str) -> str:
@@ -99,7 +113,7 @@ def extract_source(path: Path) -> ExtractedSource:
 
 
 def _extract_pdf(path: Path) -> ExtractedSource:
-    title = _title_from_stem(path.stem)
+    title = title_from_path(path)
     try:
         import fitz
     except ModuleNotFoundError:
@@ -110,28 +124,19 @@ def _extract_pdf(path: Path) -> ExtractedSource:
     except Exception:
         return _pdf_placeholder(title)
 
-    page_texts: list[str] = []
+    page_texts: list[ExtractedPageText] = []
     try:
-        for page in doc:
+        for page_number, page in enumerate(doc, start=1):
             raw_text = fix_pdf_artifacts(page.get_text("text") or "").strip()
             if raw_text:
-                page_texts.append(raw_text)
+                page_texts.append(ExtractedPageText(page_number=page_number, text=raw_text))
     finally:
         doc.close()
 
-    full_text = "\n\n".join(page_texts).strip()
-    if not full_text:
+    if not page_texts:
         return _pdf_placeholder(title)
 
-    paragraphs = tuple(_paragraphs_from_text(full_text))
-    normalized = normalize_text(full_text)
-    return ExtractedSource(
-        title=title,
-        normalized_text=normalized,
-        paragraphs=paragraphs or ((normalized,) if normalized else ()),
-        headings=(),
-        metadata_only=False,
-    )
+    return source_from_pdf_pages(title, tuple(page_texts))
 
 
 def _extract_html(path: Path) -> ExtractedSource:
@@ -188,7 +193,7 @@ def _extract_markdown(path: Path) -> ExtractedSource:
 
 
 def _extract_image_stub(path: Path) -> ExtractedSource:
-    title = _title_from_stem(path.stem)
+    title = title_from_path(path)
     size = path.stat().st_size
     suffix = path.suffix.lower().lstrip(".")
     text = (
@@ -220,6 +225,35 @@ def _pdf_placeholder(title: str) -> ExtractedSource:
         paragraphs=(normalized,),
         headings=(),
         metadata_only=True,
+    )
+
+
+def pdf_placeholder_source(path_or_title: Path | str) -> ExtractedSource:
+    if isinstance(path_or_title, Path):
+        return _pdf_placeholder(title_from_path(path_or_title))
+    return _pdf_placeholder(str(path_or_title).strip() or "Untitled")
+
+
+def source_from_pdf_pages(
+    title: str,
+    page_texts: tuple[ExtractedPageText, ...],
+    *,
+    warnings: tuple[str, ...] = (),
+    requires_document_review: bool = True,
+) -> ExtractedSource:
+    full_text = "\n\n".join(page.text for page in page_texts).strip()
+    normalized = normalize_text(full_text)
+    paragraphs = tuple(_paragraphs_from_text(full_text))
+    return ExtractedSource(
+        title=title,
+        normalized_text=normalized,
+        paragraphs=paragraphs or ((normalized,) if normalized else ()),
+        headings=(),
+        metadata_only=False,
+        extraction_method="pymupdf_text",
+        requires_document_review=requires_document_review,
+        warnings=tuple(warnings),
+        page_texts=page_texts,
     )
 
 

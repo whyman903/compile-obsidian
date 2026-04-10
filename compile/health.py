@@ -190,6 +190,12 @@ def build_health_report(
             "thin_pages": len(vault.thin_pages),
             "raw_files_without_source_notes": len(vault.raw_files_without_source_notes),
             "source_pages_without_raw_links": len(vault.source_pages_without_raw_links),
+            "needs_document_review": sum(
+                1
+                for page in vault.pages
+                if page.page_type == "source"
+                and str(page.frontmatter.get("review_status") or "").strip() == "needs_document_review"
+            ),
         },
         "issues": issues,
     }
