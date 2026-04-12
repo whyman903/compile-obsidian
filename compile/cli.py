@@ -97,7 +97,7 @@ def _candidate_source_titles(base_title: str, raw_relative: str):
     for parent in reversed(parents):
         labels.insert(0, _humanize_source_label(parent))
         yield f"{base_title} ({' - '.join(labels)})"
-    for index in range(2, 11):
+    for index in range(2, 100):
         yield f"{base_title} ({index})"
 
 
