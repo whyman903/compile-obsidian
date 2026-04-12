@@ -15,4 +15,10 @@ Workflow:
    cd "{{wiki_path}}" && compile ingest <filename> && compile health
    ```
 
-3. Tell the user: "Captured to wiki and ingested as a source note. If you want, I can continue now by reviewing the raw source, strengthening the source note, and updating related articles." If the captured insight involves relationships between concepts (a mental model, comparison, or dependency chain), add: "This could also work well as a canvas or diagram — ask me to visualize it."
+3. Tell the user: "Captured to wiki and ingested as a source note. I can continue now by reviewing the raw source, strengthening the source note, and updating related articles."
+
+4. Check the captured content against format triggers:
+   - Maps 4+ related concepts, actors, or dependencies → offer: "I'll also create a canvas to visualize the relationships."
+   - Describes a sequential process or argument flow → offer: "I'll add a mermaid diagram to the source note."
+   - Contains a comparison across 3+ items → offer: "I'll add a comparison table."
+   Create the artifact only if the user asks for it or explicitly agrees.

@@ -604,6 +604,21 @@ def test_find_source_page_by_raw_path(tmp_path: Path) -> None:
     assert connector.find_source_page_by_raw_path("raw/other.md") is None
 
 
+def test_find_source_page_by_raw_path_normalizes_legacy_slashes(tmp_path: Path) -> None:
+    init_workspace(tmp_path, "Test Topic")
+    page_path = tmp_path / "wiki" / "sources" / "Paper.md"
+    page_path.write_text(
+        "---\ntitle: Paper\ntype: source\nstatus: seed\n"
+        "summary: A paper.\nsources:\n- raw\\paper.md\n"
+        "created: 2026-04-08 00:00\nupdated: 2026-04-08 00:00\n---\n\n# Paper\n\nSource note."
+    )
+
+    connector = ObsidianConnector(tmp_path)
+    found = connector.find_source_page_by_raw_path("./raw/paper.md")
+    assert found is not None
+    assert found.title == "Paper"
+
+
 def test_find_source_page_by_raw_path_raises_on_duplicates(tmp_path: Path) -> None:
     init_workspace(tmp_path, "Test Topic")
     first = tmp_path / "wiki" / "sources" / "Paper.md"
@@ -641,3 +656,49 @@ def test_find_source_page_by_raw_path_raises_on_duplicates(tmp_path: Path) -> No
 
     with pytest.raises(ValueError, match="Multiple source pages claim 'raw/paper.md'"):
         connector.find_source_page_by_raw_path("raw/paper.md")
+
+
+def test_search_terms_filters_stopwords() -> None:
+    from compile.obsidian import _search_terms
+
+    terms = _search_terms("This is a test of the search and filter system")
+    assert "this" not in terms
+    assert "is" not in terms
+    assert "a" not in terms
+    assert "the" not in terms
+    assert "and" not in terms
+    assert "of" not in terms
+    assert "test" in terms
+    assert "search" in terms
+    assert "filter" in terms
+    assert "system" in terms
+
+
+def test_search_terms_preserves_content_words() -> None:
+    from compile.obsidian import _search_terms
+
+    terms = _search_terms("matplotlib compile render chart debugging")
+    assert terms == ["matplotlib", "compile", "render", "chart", "debugging"]
+
+
+def test_find_related_pages_skips_generic_headings(tmp_path: Path) -> None:
+    from compile.ingest import _find_related_pages
+
+    init_workspace(tmp_path, "Test")
+    _write_page(
+        tmp_path / "wiki" / "articles" / "intro.md",
+        "Introduction to Everything",
+        "article",
+        "A broad overview of many topics including context and background.",
+    )
+    connector = ObsidianConnector(tmp_path)
+
+    results = _find_related_pages(
+        connector,
+        title="Specific Technical Topic",
+        headings=["Context", "Introduction", "Background"],
+        synopsis="Details about a specific technical topic.",
+    )
+    # Generic headings should not produce spurious matches
+    matched_titles = [hit.title for hit in results]
+    assert "Introduction to Everything" not in matched_titles

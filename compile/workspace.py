@@ -93,17 +93,38 @@ def get_unprocessed(config: Config) -> list[Path]:
 
 def get_status(config: Config) -> dict:
     from compile.text import is_generated_raw_asset, is_supported
+    from compile.obsidian import ObsidianConnector
     state = load_state(config)
     raw_files = [
         p for p in config.raw_dir.rglob("*")
         if p.is_file() and is_supported(p) and not is_generated_raw_asset(p)
     ]
+    raw_relatives = {
+        str(path.relative_to(config.workspace_root))
+        for path in raw_files
+    }
+    processed_count = sum(
+        1
+        for relative in state.get("processed", {})
+        if relative in raw_relatives
+    )
+    try:
+        connector = ObsidianConnector(config.workspace_root)
+        needs_document_review = sum(
+            1
+            for page in connector.scan()
+            if page.page_type == "source"
+            and str(page.frontmatter.get("review_status") or "").strip() == "needs_document_review"
+        )
+    except Exception:
+        needs_document_review = 0
     return {
         "topic": config.topic,
         "description": config.description,
         "raw_files": len(raw_files),
-        "processed": len(state.get("processed", {})),
+        "processed": processed_count,
         "unprocessed": len(get_unprocessed(config)),
+        "needs_document_review": needs_document_review,
         "wiki_pages": len(list(config.wiki_dir.rglob("*.md"))),
         "workspace_root": str(config.workspace_root),
     }

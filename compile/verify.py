@@ -100,6 +100,7 @@ def _audit_page(page: Any) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     summary = str(page.frontmatter.get("summary") or "").strip()
     status = str(page.frontmatter.get("status") or "").strip().lower()
+    review_status = str(page.frontmatter.get("review_status") or "").strip().lower()
     source_count = int(page.frontmatter.get("source_count") or 0)
 
     if summary and MALFORMED_SUMMARY_RE.search(summary):
@@ -142,6 +143,19 @@ def _audit_page(page: Any) -> list[dict[str, Any]]:
                 "severity": "medium",
                 "title": f"{page.title}: marked stable despite thin evidence.",
                 "suggestion": "Keep the page provisional or add more supporting sources and explicit synthesis.",
+            }
+        )
+
+    if page.page_type == "source" and review_status == "needs_document_review":
+        issues.append(
+            {
+                "type": "needs_document_review",
+                "severity": "low",
+                "title": f"{page.title}: source note still needs document review.",
+                "suggestion": (
+                    "Review the raw PDF for layout, tables, figures, captions, and reading order, "
+                    "then run `compile review mark-reviewed <locator>`."
+                ),
             }
         )
 

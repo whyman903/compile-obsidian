@@ -46,6 +46,18 @@ class Config:
         return self.workspace_root / ".compile"
 
     @property
+    def extract_dir(self) -> Path:
+        return self.compile_dir / "extract"
+
+    @property
+    def index_dir(self) -> Path:
+        return self.compile_dir / "index"
+
+    @property
+    def search_index_path(self) -> Path:
+        return self.index_dir / "search.db"
+
+    @property
     def config_path(self) -> Path:
         return self.compile_dir / "config.yaml"
 

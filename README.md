@@ -4,15 +4,19 @@ Compile is an LLM-maintained wiki for Obsidian. You curate sources and ask quest
 
 ## Install
 
+Install from the local repo (not from PyPI — there's an unrelated `compile` package there):
+
 ```bash
-uv tool install compile
+uv tool install /path/to/obsidian-compile
 ```
 
 To update after pulling new changes:
 
 ```bash
-uv tool install compile --force
+uv tool install /path/to/obsidian-compile --force
 ```
+
+> **Warning:** Do not run `uv tool install compile` — that installs an unrelated PyPI package. Always install from the local path.
 
 ## Quick Start
 
@@ -28,7 +32,7 @@ compile init "My Wiki" -d "What this wiki is about"
 compile claude setup .
 ```
 
-This installs slash commands (`/capture`, `/wiki-query`, `/wiki-context`) that make the wiki accessible from any Claude Code session, plus workspace-local commands (`/ingest`, `/query`, `/lint`) for the full editing toolset.
+This installs slash commands (`/capture`, `/wiki-query`, `/wiki-context`) that make the wiki accessible from any Claude Code session, plus workspace-local commands (`/context`, `/ingest`, `/query`, `/lint`) for the full editing toolset.
 
 3. **Open the workspace in Obsidian** — it's already configured as a vault.
 
@@ -46,9 +50,11 @@ The wiki compounds over time. Every source processed and every question answered
 
 ## What Claude Does
 
-- **Ingest**: registers a source, writes a source note with provenance, and updates the index. Claude then reads the raw source, strengthens the note, and updates related articles.
+- **Ingest**: registers a source, writes a source note with provenance, and updates the index. Claude can then strengthen the note and update related articles.
 - **Query**: searches the wiki, synthesizes an answer, and files durable answers back as new pages.
 - **Lint**: audits for broken links, stale claims, missing cross-references, orphan pages, and contradictions.
+
+PDF handling is intentionally simple: `compile ingest` does best-effort plain-text extraction, but Claude should use direct document understanding when the client/session supports it. Rich visuals are created explicitly with `compile render canvas`, `compile render marp`, and `compile render chart`.
 
 ## Workflow Notes
 

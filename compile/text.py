@@ -1,14 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from hashlib import sha1
 from pathlib import Path
 import re
-import shutil
 
 from bs4 import BeautifulSoup
 
-from compile.config import _discover_workspace_root
 from compile.markdown import parse_markdown_text
 
 
@@ -28,18 +25,12 @@ SUPPORTED_EXTENSIONS = {
 
 HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+(.*?)\s*$")
 HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
-MIN_EXTRACTED_IMAGE_WIDTH = 96
-MIN_EXTRACTED_IMAGE_HEIGHT = 96
-MIN_EXTRACTED_IMAGE_AREA = 20_000
 
 
 @dataclass(frozen=True)
-class ExtractedAsset:
-    relative_path: str
+class ExtractedPageText:
     page_number: int
-    width: int
-    height: int
-    sha1: str
+    text: str
 
 
 @dataclass(frozen=True)
@@ -48,8 +39,11 @@ class ExtractedSource:
     normalized_text: str
     paragraphs: tuple[str, ...]
     headings: tuple[str, ...]
-    assets: tuple[ExtractedAsset, ...]
     metadata_only: bool
+    extraction_method: str | None = None
+    requires_document_review: bool = False
+    warnings: tuple[str, ...] = ()
+    page_texts: tuple[ExtractedPageText, ...] = ()
 
 
 def slugify(value: str) -> str:
@@ -62,11 +56,7 @@ def normalize_text(text: str) -> str:
 
 
 def _split_camel_case(value: str) -> str:
-    """Insert spaces into camelCase or PascalCase runs.
-
-    'SingerAllAnimalsAreEqual' -> 'Singer All Animals Are Equal'
-    'HTMLParser' -> 'HTML Parser'
-    """
+    """Insert spaces into camelCase or PascalCase runs."""
     value = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", value)
     value = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", value)
     return value
@@ -79,38 +69,25 @@ def _title_from_stem(stem: str) -> str:
     return normalize_text(name).title()
 
 
+def title_from_path(path: Path) -> str:
+    return _title_from_stem(path.stem)
+
+
 def fix_pdf_artifacts(text: str) -> str:
-    """Normalize common PDF extraction artifacts.
-
-    - Fix hyphenated line breaks: "word-\\nbreak" -> "wordbreak"
-    - Fix ligature issues: fi, fl, ff ligatures
-    - Collapse multiple blank lines to max 2
-    """
-    # Fix hyphenated line breaks (word- followed by newline then lowercase continuation)
+    """Normalize common PDF extraction artifacts."""
     text = re.sub(r"(\w)-\n(\w)", r"\1\2", text)
-
-    # Fix common ligature characters
-    text = text.replace("\ufb01", "fi")   # ﬁ -> fi
-    text = text.replace("\ufb02", "fl")   # ﬂ -> fl
-    text = text.replace("\ufb00", "ff")   # ﬀ -> ff
-    text = text.replace("\ufb03", "ffi")  # ﬃ -> ffi
-    text = text.replace("\ufb04", "ffl")  # ﬄ -> ffl
-
-    # Collapse multiple blank lines to max 2
+    text = text.replace("\ufb01", "fi")
+    text = text.replace("\ufb02", "fl")
+    text = text.replace("\ufb00", "ff")
+    text = text.replace("\ufb03", "ffi")
+    text = text.replace("\ufb04", "ffl")
     text = re.sub(r"\n{3,}", "\n\n", text)
-
     return text
 
 
 def is_equation_heavy(text: str) -> bool:
-    """Return True if the text contains more than 3 equation patterns.
-
-    Detects $$...$$ display equations, $...$ inline equations,
-    and lines with heavy math-symbol usage.
-    """
-    # Count display math blocks $$...$$
+    """Return True if the text contains more than 3 equation patterns."""
     display_eqs = len(re.findall(r"\$\$.+?\$\$", text, re.DOTALL))
-    # Count inline math $...$ (not preceded/followed by another $)
     inline_eqs = len(re.findall(r"(?<!\$)\$(?!\$).+?(?<!\$)\$(?!\$)", text))
     return (display_eqs + inline_eqs) > 3
 
@@ -136,7 +113,7 @@ def extract_source(path: Path) -> ExtractedSource:
 
 
 def _extract_pdf(path: Path) -> ExtractedSource:
-    title = _title_from_stem(path.stem)
+    title = title_from_path(path)
     try:
         import fitz
     except ModuleNotFoundError:
@@ -147,37 +124,19 @@ def _extract_pdf(path: Path) -> ExtractedSource:
     except Exception:
         return _pdf_placeholder(title)
 
-    page_texts: list[str] = []
-    assets: list[ExtractedAsset] = []
+    page_texts: list[ExtractedPageText] = []
     try:
-        assets = _extract_pdf_assets(doc, path)
-        for page in doc:
+        for page_number, page in enumerate(doc, start=1):
             raw_text = fix_pdf_artifacts(page.get_text("text") or "").strip()
             if raw_text:
-                page_texts.append(raw_text)
+                page_texts.append(ExtractedPageText(page_number=page_number, text=raw_text))
     finally:
         doc.close()
 
-    full_text = "\n\n".join(page_texts).strip()
-    paragraphs = tuple(_paragraphs_from_text(full_text))
-    normalized = normalize_text(full_text)
-    if not normalized and assets:
-        normalized = (
-            f"Extracted {len(assets)} figure(s) from the source PDF, "
-            "but little usable page text."
-        )
-
-    if not normalized and not assets:
+    if not page_texts:
         return _pdf_placeholder(title)
 
-    return ExtractedSource(
-        title=title,
-        normalized_text=normalized,
-        paragraphs=paragraphs or ((normalized,) if normalized else ()),
-        headings=(),
-        assets=tuple(assets),
-        metadata_only=False,
-    )
+    return source_from_pdf_pages(title, tuple(page_texts))
 
 
 def _extract_html(path: Path) -> ExtractedSource:
@@ -211,7 +170,6 @@ def _extract_html(path: Path) -> ExtractedSource:
         normalized_text=text,
         paragraphs=tuple(paragraphs or _paragraphs_from_text(body_node.get_text("\n\n", strip=True))),
         headings=tuple(_dedupe_headings(headings, title[:120])),
-        assets=(),
         metadata_only=False,
     )
 
@@ -230,13 +188,12 @@ def _extract_markdown(path: Path) -> ExtractedSource:
         normalized_text=normalized,
         paragraphs=tuple(paragraphs),
         headings=tuple(headings),
-        assets=(),
         metadata_only=False,
     )
 
 
 def _extract_image_stub(path: Path) -> ExtractedSource:
-    title = _title_from_stem(path.stem)
+    title = title_from_path(path)
     size = path.stat().st_size
     suffix = path.suffix.lower().lstrip(".")
     text = (
@@ -252,7 +209,6 @@ def _extract_image_stub(path: Path) -> ExtractedSource:
         normalized_text=normalized,
         paragraphs=(normalized,),
         headings=(),
-        assets=(),
         metadata_only=True,
     )
 
@@ -260,7 +216,7 @@ def _extract_image_stub(path: Path) -> ExtractedSource:
 def _pdf_placeholder(title: str) -> ExtractedSource:
     text = (
         "PDF source registered. "
-        "Content extraction is deferred to Anthropic's native PDF reader during analysis."
+        "Content extraction is deferred to Claude's document understanding when available during analysis."
     )
     normalized = normalize_text(text)
     return ExtractedSource(
@@ -268,105 +224,37 @@ def _pdf_placeholder(title: str) -> ExtractedSource:
         normalized_text=normalized,
         paragraphs=(normalized,),
         headings=(),
-        assets=(),
         metadata_only=True,
     )
 
 
-def _extract_pdf_assets(doc: object, pdf_path: Path) -> list[ExtractedAsset]:
-    assets: list[ExtractedAsset] = []
-    seen: set[str] = set()
-    assets_root, relative_root = _asset_storage_root(pdf_path)
-    if assets_root.exists():
-        shutil.rmtree(assets_root)
-    image_counter = 1
-
-    for page_index, page in enumerate(doc):
-        page_number = page_index + 1
-        for image in page.get_images(full=True):
-            xref = image[0]
-            try:
-                payload = doc.extract_image(xref)
-            except Exception:
-                continue
-            image_bytes = payload.get("image")
-            width = int(payload.get("width") or 0)
-            height = int(payload.get("height") or 0)
-            if not image_bytes:
-                continue
-            if width < MIN_EXTRACTED_IMAGE_WIDTH or height < MIN_EXTRACTED_IMAGE_HEIGHT:
-                continue
-            if width * height < MIN_EXTRACTED_IMAGE_AREA:
-                continue
-
-            digest = sha1(image_bytes).hexdigest()
-            if digest in seen:
-                continue
-            seen.add(digest)
-
-            ext = str(payload.get("ext") or "png").lower().strip(".")
-            assets_root.mkdir(parents=True, exist_ok=True)
-            asset_path = assets_root / f"page-{page_number:03d}-image-{image_counter:02d}.{ext}"
-            image_counter += 1
-            asset_path.write_bytes(image_bytes)
-            assets.append(
-                ExtractedAsset(
-                    relative_path=_relative_asset_path(asset_path, relative_root),
-                    page_number=page_number,
-                    width=width,
-                    height=height,
-                    sha1=digest,
-                )
-            )
-
-    return assets
+def pdf_placeholder_source(path_or_title: Path | str) -> ExtractedSource:
+    if isinstance(path_or_title, Path):
+        return _pdf_placeholder(title_from_path(path_or_title))
+    return _pdf_placeholder(str(path_or_title).strip() or "Untitled")
 
 
-def _find_raw_dir(path: Path) -> Path | None:
-    for parent in path.parents:
-        if parent.name == "raw":
-            return parent
-    return None
-
-
-def _asset_storage_root(pdf_path: Path) -> tuple[Path, Path | None]:
-    workspace_root = _discover_workspace_root(pdf_path.parent)
-    raw_dir = _find_raw_dir(pdf_path)
-    if workspace_root is not None and raw_dir == workspace_root / "raw":
-        source_key = str(pdf_path.relative_to(workspace_root)).replace("\\", "/")
-        relative_source = pdf_path.relative_to(raw_dir).with_suffix("")
-        return workspace_root / "raw" / "assets" / _slugified_path(relative_source, source_key=source_key), workspace_root
-    if workspace_root is not None:
-        source_key = str(pdf_path.relative_to(workspace_root)).replace("\\", "/")
-        relative_source = pdf_path.relative_to(workspace_root).with_suffix("")
-        return workspace_root / "raw" / "assets" / _slugified_path(relative_source, source_key=source_key), workspace_root
-    if raw_dir is not None:
-        source_key = str(pdf_path.relative_to(raw_dir.parent)).replace("\\", "/")
-        relative_source = pdf_path.relative_to(raw_dir).with_suffix("")
-        return raw_dir / "assets" / _slugified_path(relative_source, source_key=source_key), raw_dir.parent
-    source_key = str(pdf_path).replace("\\", "/")
-    stem_slug = slugify(pdf_path.stem) or "untitled"
-    suffix = sha1(source_key.encode()).hexdigest()[:6]
-    return pdf_path.parent / "assets" / f"{stem_slug}-{suffix}", pdf_path.parent
-
-
-def _slugified_path(path: Path, *, source_key: str | None = None) -> Path:
-    parts = [slugify(part) for part in path.parts if part not in {"", "."}]
-    if not parts:
-        parts = ["untitled"]
-    if source_key:
-        suffix = sha1(source_key.encode()).hexdigest()[:6]
-        parts[-1] = f"{parts[-1]}-{suffix}"
-    return Path(*parts)
-
-
-def _relative_asset_path(asset_path: Path, relative_root: Path | None) -> str:
-    if relative_root is not None:
-        try:
-            return str(asset_path.relative_to(relative_root)).replace("\\", "/")
-        except ValueError:
-            pass
-    return str(asset_path).replace("\\", "/")
+def source_from_pdf_pages(
+    title: str,
+    page_texts: tuple[ExtractedPageText, ...],
+    *,
+    warnings: tuple[str, ...] = (),
+    requires_document_review: bool = True,
+) -> ExtractedSource:
+    full_text = "\n\n".join(page.text for page in page_texts).strip()
+    normalized = normalize_text(full_text)
+    paragraphs = tuple(_paragraphs_from_text(full_text))
+    return ExtractedSource(
+        title=title,
+        normalized_text=normalized,
+        paragraphs=paragraphs or ((normalized,) if normalized else ()),
+        headings=(),
+        metadata_only=False,
+        extraction_method="pymupdf_text",
+        requires_document_review=requires_document_review,
+        warnings=tuple(warnings),
+        page_texts=page_texts,
+    )
 
 
 def _strip_comments(text: str) -> str:

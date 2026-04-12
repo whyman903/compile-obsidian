@@ -67,14 +67,10 @@ dependencies = [
     { name = "click" },
     { name = "httpx" },
     { name = "markdownify" },
+    { name = "matplotlib" },
     { name = "pymupdf" },
     { name = "pyyaml" },
     { name = "rich" },
-]
-
-[package.optional-dependencies]
-charts = [
-    { name = "matplotlib" },
 ]
 
 [package.dev-dependencies]
@@ -88,12 +84,11 @@ requires-dist = [
     { name = "click", specifier = ">=8.1" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "markdownify", specifier = ">=0.14" },
-    { name = "matplotlib", marker = "extra == 'charts'", specifier = ">=3.8" },
+    { name = "matplotlib", specifier = ">=3.8" },
     { name = "pymupdf", specifier = ">=1.27.2.2" },
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "rich", specifier = ">=13.0" },
 ]
-provides-extras = ["charts"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=8.4.2" }]
