@@ -1,4 +1,18 @@
 {
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "mcp__notion",
+      "Edit(.compile/notion-sync-profile.json)",
+      "Edit(raw/notion/**)",
+      "Bash(compile ingest raw/notion/*)",
+      "Bash(compile obsidian refresh)",
+      "Bash(compile health)",
+      "Bash(uv run compile ingest raw/notion/*)",
+      "Bash(uv run compile obsidian refresh)",
+      "Bash(uv run compile health)"
+    ]
+  },
   "hooks": {
     "SessionStart": [
       {

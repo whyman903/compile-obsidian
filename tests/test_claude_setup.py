@@ -59,6 +59,10 @@ def test_fresh_install(tmp_path: Path) -> None:
     assert "<!-- compile:figures:start -->" not in workspace_claude
     assert "create them when the user asks for them or explicitly agrees" in workspace_claude.lower()
     assert (ws / ".claude" / "settings.local.json").exists()
+    settings_content = (ws / ".claude" / "settings.local.json").read_text()
+    assert '"mcp__notion"' in settings_content
+    assert '"Edit(raw/notion/**)"' in settings_content
+    assert '"Bash(compile health)"' in settings_content
     for name in workspace_templates:
         assert (ws / ".claude" / "commands" / name).exists()
 
@@ -91,6 +95,46 @@ def test_force_overwrites(tmp_path: Path) -> None:
     assert result["mispointed"] == []
     assert result["obsolete"] == []
     assert result["removed"] == []
+
+
+def test_force_merges_existing_settings_local_json(tmp_path: Path) -> None:
+    ws = _make_workspace(tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+
+    install_claude_files(ws, home, force=False)
+    settings_path = ws / ".claude" / "settings.local.json"
+    settings_path.write_text(
+        """{
+  "permissions": {
+    "allow": [
+      "Bash(custom command)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "custom",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo custom"
+          }
+        ]
+      }
+    ]
+  }
+}
+"""
+    )
+
+    install_claude_files(ws, home, force=True)
+
+    merged = settings_path.read_text()
+    assert '"Bash(custom command)"' in merged
+    assert '"mcp__notion"' in merged
+    assert '"matcher": "custom"' in merged
+    assert "No wiki index found." in merged
 
 
 def test_mispointed_globals_detected(tmp_path: Path) -> None:

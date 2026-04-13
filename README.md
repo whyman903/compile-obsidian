@@ -38,6 +38,18 @@ This installs slash commands (`/capture`, `/wiki-query`, `/wiki-context`) that m
 
 4. **Start working with Claude.** Drop sources into `raw/`, then use `/ingest` to process them. Ask questions with `/wiki-query`. For substantial page writes, prefer file-backed edits with `compile obsidian upsert --body-file ...`, then run `compile obsidian refresh` and `compile health`.
 
+## Notion via Claude
+
+If Notion is connected in Claude, you can keep the sync flow natural-language instead of asking users for root-page IDs.
+
+1. Run `/notion-setup` and describe the scope in plain language, for example: `all my product stuff`.
+2. Claude saves that scope to `.compile/notion-sync-profile.json`.
+3. Run `/notion-sync` to pull matching Notion pages into `raw/notion/` and then ingest them into the wiki.
+
+The raw files are written as `raw/notion/<page_id>.md` with provenance comments, and `compile ingest` handles source-note creation and refresh. If a user removes `notion_page_id` from a source note, future syncs treat that note as user-claimed and preserve it.
+
+Once the interactive flow works, schedule `/notion-sync` in Claude Code for unattended runs.
+
 ## How It Works
 
 There are three layers:

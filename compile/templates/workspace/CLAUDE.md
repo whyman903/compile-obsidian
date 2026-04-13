@@ -52,6 +52,11 @@ compile render marp <title> --body-file /tmp/deck.md
 compile render chart <title> --script-file /tmp/chart.py
 ```
 
+### Connected workspace commands
+
+- `/notion-setup` — use the connected Notion tools in Claude to save a local sync profile without asking the user for page IDs.
+- `/notion-sync` — sync Notion pages into `raw/notion/`, then run the normal ingest workflow.
+
 ### Tool selection
 
 - Search before creating pages. Prefer updating an existing page over spawning a near-duplicate.

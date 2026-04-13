@@ -95,6 +95,101 @@ class TestIngestCommand:
         assert "type: source" in source_text
         assert "## Synopsis" in source_text
 
+    def test_ingest_notion_markdown_stamps_frontmatter(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        raw_file = tmp_path / "raw" / "notion" / "product-notes.md"
+        raw_file.parent.mkdir(parents=True, exist_ok=True)
+        raw_file.write_text(
+            "<!-- source: notion -->\n"
+            "<!-- notion_page_id: 1429989f-e8ac-4eff-bc8f-57f56486db54 -->\n"
+            "<!-- notion_page_url: https://www.notion.so/product-notes -->\n"
+            "<!-- notion_last_edited_time: 2026-04-12T12:00:00Z -->\n"
+            "<!-- notion_synced_at: 2026-04-12T12:05:00Z -->\n\n"
+            "# Product Notes\n\nImportant roadmap decisions.\n"
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["ingest", "raw/notion/product-notes.md", "--path", str(tmp_path)])
+
+        assert result.exit_code == 0
+        source_text = (tmp_path / "wiki" / "sources" / "Product Notes.md").read_text()
+        assert "notion_page_id: 1429989f-e8ac-4eff-bc8f-57f56486db54" in source_text
+        assert "notion_url: https://www.notion.so/product-notes" in source_text
+        assert "notion_last_edited_time: '2026-04-12T12:00:00Z'" in source_text
+        assert "notion_synced_at: '2026-04-12T12:05:00Z'" in source_text
+
+    def test_reingest_notion_markdown_refreshes_matching_source_note(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        raw_file = tmp_path / "raw" / "notion" / "product-notes.md"
+        raw_file.parent.mkdir(parents=True, exist_ok=True)
+        raw_file.write_text(
+            "<!-- source: notion -->\n"
+            "<!-- notion_page_id: 1429989f-e8ac-4eff-bc8f-57f56486db54 -->\n"
+            "<!-- notion_page_url: https://www.notion.so/product-notes -->\n"
+            "<!-- notion_last_edited_time: 2026-04-12T12:00:00Z -->\n"
+            "<!-- notion_synced_at: 2026-04-12T12:05:00Z -->\n\n"
+            "# Product Notes\n\nOriginal roadmap decisions.\n"
+        )
+
+        runner = CliRunner()
+        first = runner.invoke(main, ["ingest", "raw/notion/product-notes.md", "--path", str(tmp_path)])
+        assert first.exit_code == 0
+
+        raw_file.write_text(
+            "<!-- source: notion -->\n"
+            "<!-- notion_page_id: 1429989f-e8ac-4eff-bc8f-57f56486db54 -->\n"
+            "<!-- notion_page_url: https://www.notion.so/product-notes -->\n"
+            "<!-- notion_last_edited_time: 2026-04-12T13:00:00Z -->\n"
+            "<!-- notion_synced_at: 2026-04-12T13:05:00Z -->\n\n"
+            "# Product Notes\n\nUpdated roadmap decisions.\n"
+        )
+        second = runner.invoke(main, ["ingest", "raw/notion/product-notes.md", "--path", str(tmp_path)])
+
+        assert second.exit_code == 0
+        source_text = (tmp_path / "wiki" / "sources" / "Product Notes.md").read_text()
+        assert "Updated roadmap decisions." in source_text
+        assert "Original roadmap decisions." not in source_text
+        assert "notion_last_edited_time: '2026-04-12T13:00:00Z'" in source_text
+
+    def test_reingest_notion_markdown_preserves_user_claimed_note(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        raw_file = tmp_path / "raw" / "notion" / "product-notes.md"
+        raw_file.parent.mkdir(parents=True, exist_ok=True)
+        raw_file.write_text(
+            "<!-- source: notion -->\n"
+            "<!-- notion_page_id: 1429989f-e8ac-4eff-bc8f-57f56486db54 -->\n"
+            "<!-- notion_page_url: https://www.notion.so/product-notes -->\n"
+            "<!-- notion_last_edited_time: 2026-04-12T12:00:00Z -->\n"
+            "<!-- notion_synced_at: 2026-04-12T12:05:00Z -->\n\n"
+            "# Product Notes\n\nOriginal roadmap decisions.\n"
+        )
+
+        runner = CliRunner()
+        first = runner.invoke(main, ["ingest", "raw/notion/product-notes.md", "--path", str(tmp_path)])
+        assert first.exit_code == 0
+
+        source_path = tmp_path / "wiki" / "sources" / "Product Notes.md"
+        source_text = source_path.read_text()
+        source_text = source_text.replace("notion_page_id: 1429989f-e8ac-4eff-bc8f-57f56486db54\n", "")
+        source_text = source_text.replace("Original roadmap decisions.", "User edited source note.")
+        source_path.write_text(source_text)
+
+        raw_file.write_text(
+            "<!-- source: notion -->\n"
+            "<!-- notion_page_id: 1429989f-e8ac-4eff-bc8f-57f56486db54 -->\n"
+            "<!-- notion_page_url: https://www.notion.so/product-notes -->\n"
+            "<!-- notion_last_edited_time: 2026-04-12T13:00:00Z -->\n"
+            "<!-- notion_synced_at: 2026-04-12T13:05:00Z -->\n\n"
+            "# Product Notes\n\nUpdated roadmap decisions.\n"
+        )
+        second = runner.invoke(main, ["ingest", "raw/notion/product-notes.md", "--path", str(tmp_path)])
+
+        assert second.exit_code == 0
+        assert "source already enriched" in second.output.lower()
+        source_text = source_path.read_text()
+        assert "User edited source note." in source_text
+        assert "Updated roadmap decisions." not in source_text
+
     def test_ingest_with_title_override(self, tmp_path: Path) -> None:
         init_workspace(tmp_path, "Test")
         raw_file = tmp_path / "raw" / "paper.md"

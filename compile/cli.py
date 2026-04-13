@@ -66,6 +66,28 @@ def _iter_managed_templates(directory: Path, *, obsolete: tuple[str, ...] = ()) 
     )
 
 
+def _merge_settings_values(existing, template):
+    if isinstance(existing, dict) and isinstance(template, dict):
+        merged = dict(existing)
+        for key, template_value in template.items():
+            if key in merged:
+                merged[key] = _merge_settings_values(merged[key], template_value)
+            else:
+                merged[key] = template_value
+        return merged
+    if isinstance(existing, list) and isinstance(template, list):
+        merged = list(existing)
+        seen = {json.dumps(item, sort_keys=True) for item in existing}
+        for item in template:
+            marker = json.dumps(item, sort_keys=True)
+            if marker in seen:
+                continue
+            merged.append(item)
+            seen.add(marker)
+        return merged
+    return existing
+
+
 def _find_source_page_by_title(connector: ObsidianConnector, title: str):
     exact_matches = [
         hit for hit in connector.search(title, page_type="source", limit=10)
@@ -124,6 +146,123 @@ def _resolve_source_title(
             return candidate, None
 
     raise ValueError(f"Could not find a unique source title for '{desired_title}'.")
+
+
+def _should_refresh_existing_source_page(page, *, extra_frontmatter: dict[str, str] | None = None) -> bool:
+    notion_page_id = str((extra_frontmatter or {}).get("notion_page_id") or "").strip()
+    if not notion_page_id:
+        return False
+    return str(page.frontmatter.get("notion_page_id") or "").strip() == notion_page_id
+
+
+def _ingest_raw_source(
+    config,
+    *,
+    raw_path: Path,
+    title: str | None = None,
+):
+    connector = ObsidianConnector(config.workspace_root)
+    raw_relative = str(raw_path.relative_to(config.workspace_root)).replace("\\", "/")
+    preloaded_extracted = None
+    pdf_artifact = None
+    extra_frontmatter = _extract_source_provenance_frontmatter(raw_path)
+    if raw_path.suffix.lower() == ".pdf":
+        desired_title = title or title_from_path(raw_path)
+    else:
+        preloaded_extracted = extract_source(raw_path)
+        desired_title = title or preloaded_extracted.title
+    effective_title, existing_source_page = _resolve_source_title(
+        connector,
+        desired_title=desired_title,
+        raw_relative=raw_relative,
+    )
+
+    if (
+        existing_source_page is not None
+        and _should_preserve_existing_source_page(existing_source_page)
+        and not _should_refresh_existing_source_page(
+            existing_source_page,
+            extra_frontmatter=extra_frontmatter,
+        )
+    ):
+        if raw_path.suffix.lower() == ".pdf":
+            _refresh_pdf_index_for_source_page(
+                config,
+                raw_path=raw_path,
+                raw_relative=raw_relative,
+                page=existing_source_page,
+            )
+        mark_processed(config, raw_path, [existing_source_page.relative_path])
+        return {
+            "status": "preserved",
+            "page": existing_source_page,
+            "artifact": None,
+            "metadata_only": False,
+            "needs_document_review": False,
+            "related_pages": [],
+        }
+
+    if preloaded_extracted is not None:
+        extracted = preloaded_extracted
+    else:
+        extracted, pdf_artifact = _extract_for_ingest(config, raw_path, raw_relative)
+    artifact = build_ingest_artifact(
+        raw_relative=raw_relative,
+        extracted=extracted,
+        connector=connector,
+        title=effective_title,
+    )
+    pin_path: str | None = None
+    if existing_source_page is not None:
+        if effective_title == existing_source_page.title:
+            pin_path = existing_source_page.relative_path
+        else:
+            old_file = config.workspace_root / existing_source_page.relative_path
+            if old_file.exists():
+                old_file.unlink()
+    merged_frontmatter = _source_review_frontmatter(extracted) or {}
+    if extra_frontmatter:
+        merged_frontmatter.update(extra_frontmatter)
+    page = connector.upsert_page(
+        title=artifact.title,
+        body=render_source_body(artifact),
+        page_type="source",
+        summary=artifact.page_summary,
+        sources=[raw_relative],
+        relative_path=pin_path,
+        extra_frontmatter=merged_frontmatter or None,
+    )
+
+    if not artifact.metadata_only:
+        mark_processed(config, raw_path, [page.relative_path])
+    if raw_path.suffix.lower() == ".pdf":
+        sync_pdf_search_index(
+            config,
+            raw_relative=raw_relative,
+            artifact=pdf_artifact,
+            display_title=page.title,
+            display_relative_path=page.relative_path,
+            page_type=page.page_type,
+            page_summary=str(page.frontmatter.get("summary") or ""),
+        )
+    pages_by_type = collect_pages_by_type(config)
+    write_index(config, pages_by_type)
+    write_overview(config, pages_by_type)
+    log_lines = [
+        f"Raw source: {raw_relative}",
+        f"Source page: {page.relative_path}",
+    ]
+    if artifact.related_pages:
+        log_lines.extend(f"Review related page: {related_page.title}" for related_page in artifact.related_pages)
+    append_log_entry(config, "ingest", artifact.title, log_lines)
+    return {
+        "status": "updated" if existing_source_page is not None else "created",
+        "page": page,
+        "artifact": artifact,
+        "metadata_only": artifact.metadata_only,
+        "needs_document_review": artifact.needs_document_review,
+        "related_pages": artifact.related_pages,
+    }
 
 
 @click.group()
@@ -207,103 +346,30 @@ def ingest(source: str, path: str, title: str | None, images: bool) -> None:
             console.print("[red]Source files must be in the raw/ directory.[/red]")
             console.print(f"  Move the file to {config.raw_dir} and retry.")
             raise SystemExit(1)
-
-    connector = ObsidianConnector(config.workspace_root)
-    raw_relative = str(raw_path.relative_to(config.workspace_root)).replace("\\", "/")
-    preloaded_extracted = None
-    pdf_artifact = None
-    if raw_path.suffix.lower() == ".pdf":
-        desired_title = title or title_from_path(raw_path)
-    else:
-        preloaded_extracted = extract_source(raw_path)
-        desired_title = title or preloaded_extracted.title
     try:
-        effective_title, existing_source_page = _resolve_source_title(
-            connector,
-            desired_title=desired_title,
-            raw_relative=raw_relative,
+        result = _ingest_raw_source(
+            config,
+            raw_path=raw_path,
+            title=title,
         )
     except ValueError as exc:
         console.print(f"[red]{exc}[/red]")
         raise SystemExit(1)
 
-    # Guard against re-clobbering an enriched source note.
-    # If a source page already exists for this title and has been enriched
-    # beyond the registration shell, skip the overwrite and mark it processed.
-    if existing_source_page is not None and _should_preserve_existing_source_page(existing_source_page):
-        if raw_path.suffix.lower() == ".pdf":
-            _refresh_pdf_index_for_source_page(
-                config,
-                raw_path=raw_path,
-                raw_relative=raw_relative,
-                page=existing_source_page,
-            )
-        mark_processed(config, raw_path, [existing_source_page.relative_path])
-        console.print(f"[yellow]Source already enriched:[/yellow] {existing_source_page.relative_path}")
+    if result["status"] == "preserved":
+        console.print(f"[yellow]Source already enriched:[/yellow] {result['page'].relative_path}")
         console.print("  Marked as processed. Skipping re-ingest.")
         return
-
-    if preloaded_extracted is not None:
-        extracted = preloaded_extracted
-    else:
-        extracted, pdf_artifact = _extract_for_ingest(config, raw_path, raw_relative)
-    artifact = build_ingest_artifact(
-        raw_relative=raw_relative,
-        extracted=extracted,
-        connector=connector,
-        title=effective_title,
-    )
-    # When replacing a registration shell with a new title, remove the old file
-    # so upsert_page creates the page at a path matching the new title.
-    pin_path: str | None = None
-    if existing_source_page is not None:
-        if effective_title == existing_source_page.title:
-            pin_path = existing_source_page.relative_path
-        else:
-            old_file = config.workspace_root / existing_source_page.relative_path
-            if old_file.exists():
-                old_file.unlink()
-    page = connector.upsert_page(
-        title=artifact.title,
-        body=render_source_body(artifact),
-        page_type="source",
-        summary=artifact.page_summary,
-        sources=[raw_relative],
-        relative_path=pin_path,
-        extra_frontmatter=_source_review_frontmatter(extracted),
-    )
-
-    if not artifact.metadata_only:
-        mark_processed(config, raw_path, [page.relative_path])
-    if raw_path.suffix.lower() == ".pdf":
-        sync_pdf_search_index(
-            config,
-            raw_relative=raw_relative,
-            artifact=pdf_artifact,
-            display_title=page.title,
-            display_relative_path=page.relative_path,
-            page_type=page.page_type,
-            page_summary=str(page.frontmatter.get("summary") or ""),
-        )
-    pages_by_type = collect_pages_by_type(config)
-    write_index(config, pages_by_type)
-    write_overview(config, pages_by_type)
-    log_lines = [
-        f"Raw source: {raw_relative}",
-        f"Source page: {page.relative_path}",
-    ]
-    if artifact.related_pages:
-        log_lines.extend(f"Review related page: {related_page.title}" for related_page in artifact.related_pages)
-    append_log_entry(config, "ingest", artifact.title, log_lines)
-
+    page = result["page"]
+    artifact = result["artifact"]
     console.print(f"[green]Source note created:[/green] {page.relative_path}")
-    if artifact.metadata_only:
+    if result["metadata_only"]:
         console.print("  Source content could not be extracted. Read the raw file and replace this note.")
-    elif artifact.needs_document_review:
+    elif result["needs_document_review"]:
         console.print("  Built from local PDF text extraction. Review the raw document before treating it as complete.")
-    if artifact.related_pages:
+    if result["related_pages"]:
         console.print("  Review these existing pages next:")
-        for related_page in artifact.related_pages:
+        for related_page in result["related_pages"]:
             console.print(f"  - {related_page.title}")
 
 
@@ -994,7 +1060,17 @@ def install_claude_files(
     if settings_dest.exists() and not force:
         skipped.append(str(settings_dest))
     else:
-        settings_dest.write_text(settings_src.read_text())
+        if settings_dest.exists():
+            try:
+                existing_settings = json.loads(settings_dest.read_text())
+                template_settings = json.loads(settings_src.read_text())
+            except json.JSONDecodeError:
+                settings_dest.write_text(settings_src.read_text())
+            else:
+                merged_settings = _merge_settings_values(existing_settings, template_settings)
+                settings_dest.write_text(json.dumps(merged_settings, indent=2) + "\n")
+        else:
+            settings_dest.write_text(settings_src.read_text())
         installed.append(str(settings_dest))
 
     # Workspace commands
@@ -1073,6 +1149,33 @@ def _source_review_frontmatter(extracted) -> dict[str, str] | None:
             "extraction_method": extracted.extraction_method,
         }
     return None
+
+
+def _extract_source_provenance_frontmatter(raw_path: Path) -> dict[str, str] | None:
+    if raw_path.suffix.lower() not in {".md", ".markdown", ".txt"}:
+        return None
+    try:
+        content = raw_path.read_text()
+    except OSError:
+        return None
+    matches = re.findall(r"<!--\s*([a-zA-Z0-9_]+)\s*:\s*(.*?)\s*-->", content)
+    if not matches:
+        return None
+    comments = {key.strip(): value.strip() for key, value in matches}
+    if comments.get("source") != "notion":
+        return None
+    frontmatter: dict[str, str] = {}
+    mapping = {
+        "notion_page_id": "notion_page_id",
+        "notion_page_url": "notion_url",
+        "notion_last_edited_time": "notion_last_edited_time",
+        "notion_synced_at": "notion_synced_at",
+    }
+    for comment_key, frontmatter_key in mapping.items():
+        value = comments.get(comment_key, "").strip()
+        if value:
+            frontmatter[frontmatter_key] = value
+    return frontmatter or None
 
 
 def _should_preserve_existing_source_page(page) -> bool:
