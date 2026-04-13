@@ -199,7 +199,6 @@ def _ingest_raw_source(
             "artifact": None,
             "metadata_only": False,
             "needs_document_review": False,
-            "related_pages": [],
         }
 
     if preloaded_extracted is not None:
@@ -252,8 +251,6 @@ def _ingest_raw_source(
         f"Raw source: {raw_relative}",
         f"Source page: {page.relative_path}",
     ]
-    if artifact.related_pages:
-        log_lines.extend(f"Review related page: {related_page.title}" for related_page in artifact.related_pages)
     append_log_entry(config, "ingest", artifact.title, log_lines)
     return {
         "status": "updated" if existing_source_page is not None else "created",
@@ -261,7 +258,6 @@ def _ingest_raw_source(
         "artifact": artifact,
         "metadata_only": artifact.metadata_only,
         "needs_document_review": artifact.needs_document_review,
-        "related_pages": artifact.related_pages,
     }
 
 
@@ -367,10 +363,6 @@ def ingest(source: str, path: str, title: str | None, images: bool) -> None:
         console.print("  Source content could not be extracted. Read the raw file and replace this note.")
     elif result["needs_document_review"]:
         console.print("  Built from local PDF text extraction. Review the raw document before treating it as complete.")
-    if result["related_pages"]:
-        console.print("  Review these existing pages next:")
-        for related_page in result["related_pages"]:
-            console.print(f"  - {related_page.title}")
 
 
 @main.command("health")

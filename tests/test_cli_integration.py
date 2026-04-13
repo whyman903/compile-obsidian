@@ -420,7 +420,7 @@ class TestIngestCommand:
         assert "Image asset registered." in source_text
         assert "Image asset named Photo." not in source_text
 
-    def test_ingest_builds_stronger_source_note_and_related_context(self, tmp_path: Path) -> None:
+    def test_ingest_builds_stronger_source_note(self, tmp_path: Path) -> None:
         init_workspace(tmp_path, "Test")
         _write_page(
             tmp_path / "wiki" / "articles" / "friendship.md",
@@ -445,28 +445,7 @@ class TestIngestCommand:
         source_text = (tmp_path / "wiki" / "sources" / "Friendship Source.md").read_text()
         assert "## Key Sections" in source_text
         assert "- Friendship" in source_text
-        assert "## Likely Related Pages" in source_text
-        assert "[[Friendship]]" in source_text
-        assert "Reason:" in source_text
-        assert "## Integration Notes" in source_text
-        assert "Review [[Friendship]] before creating a new article on this topic." in source_text
         assert "A second paragraph expands" in source_text
-
-    def test_ingest_omits_noisy_related_sections_when_no_good_matches(self, tmp_path: Path) -> None:
-        init_workspace(tmp_path, "Test")
-        raw_file = tmp_path / "raw" / "isolated.md"
-        raw_file.write_text(
-            "# Isolated Source\n\n"
-            "A source about an entirely novel niche topic with no overlap to existing pages in this workspace.\n"
-        )
-
-        runner = CliRunner()
-        result = runner.invoke(main, ["ingest", "isolated.md", "--path", str(tmp_path)])
-
-        assert result.exit_code == 0
-        source_text = (tmp_path / "wiki" / "sources" / "Isolated Source.md").read_text()
-        assert "## Likely Related Pages" not in source_text
-        assert "## Integration Notes" not in source_text
 
     def test_ingest_strips_provenance_comments_from_synopsis(self, tmp_path: Path) -> None:
         init_workspace(tmp_path, "Test")
@@ -500,7 +479,7 @@ class TestIngestCommand:
         assert "Minimal source content; no substantive summary available." in source_text
         assert "summary: '- Source file:" not in source_text
 
-    def test_ingest_uses_override_title_for_related_matching(self, tmp_path: Path) -> None:
+    def test_ingest_uses_override_title_for_source_note(self, tmp_path: Path) -> None:
         init_workspace(tmp_path, "Test")
         _write_page(
             tmp_path / "wiki" / "articles" / "friendship.md",
@@ -517,33 +496,10 @@ class TestIngestCommand:
         ])
 
         assert result.exit_code == 0
-        source_text = (tmp_path / "wiki" / "sources" / "Friendship Research.md").read_text()
-        assert "## Likely Related Pages" in source_text
-        assert "[[Friendship]]" in source_text
-
-    def test_ingest_surfaces_content_based_related_matches(self, tmp_path: Path) -> None:
-        init_workspace(tmp_path, "Test")
-        _write_page(
-            tmp_path / "wiki" / "articles" / "supervised-learning.md",
-            "Supervised Learning",
-            "article",
-            "Learning from labeled examples and training data.",
-        )
-        raw_file = tmp_path / "raw" / "ml.md"
-        raw_file.write_text(
-            "# ML Notes\n\n"
-            "This source explains how models learn from labeled examples during training and evaluation. "
-            "It compares classifiers and held-out validation.\n"
-        )
-
-        runner = CliRunner()
-        result = runner.invoke(main, ["ingest", "ml.md", "--path", str(tmp_path)])
-
-        assert result.exit_code == 0
-        source_text = (tmp_path / "wiki" / "sources" / "ML Notes.md").read_text()
-        assert "## Likely Related Pages" in source_text
-        assert "[[Supervised Learning]]" in source_text
-
+        source_path = tmp_path / "wiki" / "sources" / "Friendship Research.md"
+        assert source_path.exists()
+        source_text = source_path.read_text()
+        assert "# Friendship Research" in source_text
 
     def test_ingest_skips_enriched_source_and_marks_processed(self, tmp_path: Path) -> None:
         """Re-ingesting a PDF whose source note was already enriched should not clobber it."""

@@ -6,7 +6,7 @@ Workflow:
 
 1. Run `compile obsidian search` with key terms from the question to find relevant pages.
 
-2. Read the top 3-5 results with `compile obsidian page`. Follow `compile obsidian neighbors` if you need more context on how pages connect.
+2. Read the top few results with `compile obsidian page`. Follow `compile obsidian neighbors` if you need more context on how pages connect.
 
 3. If the wiki pages are insufficient, read raw sources in `raw/` for additional evidence.
 

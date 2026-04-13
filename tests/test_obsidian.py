@@ -679,26 +679,3 @@ def test_search_terms_preserves_content_words() -> None:
 
     terms = _search_terms("matplotlib compile render chart debugging")
     assert terms == ["matplotlib", "compile", "render", "chart", "debugging"]
-
-
-def test_find_related_pages_skips_generic_headings(tmp_path: Path) -> None:
-    from compile.ingest import _find_related_pages
-
-    init_workspace(tmp_path, "Test")
-    _write_page(
-        tmp_path / "wiki" / "articles" / "intro.md",
-        "Introduction to Everything",
-        "article",
-        "A broad overview of many topics including context and background.",
-    )
-    connector = ObsidianConnector(tmp_path)
-
-    results = _find_related_pages(
-        connector,
-        title="Specific Technical Topic",
-        headings=["Context", "Introduction", "Background"],
-        synopsis="Details about a specific technical topic.",
-    )
-    # Generic headings should not produce spurious matches
-    matched_titles = [hit.title for hit in results]
-    assert "Introduction to Everything" not in matched_titles
