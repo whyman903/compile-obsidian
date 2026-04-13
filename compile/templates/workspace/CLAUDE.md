@@ -93,9 +93,10 @@ When the user adds a source to `raw/` and asks you to process it:
 3. Read the generated source note.
 4. Read the raw source itself when the generated note is weak, incomplete, or needs verification.
 5. Rewrite the source note in place with `compile obsidian upsert --body-file ...` when a substantial improvement is warranted.
-6. Update related articles if the source materially strengthens them.
+6. Update existing pages that should absorb the source. After `compile ingest`, inspect the source note and search the wiki for durable pages or navigation pages that should incorporate it. If a map, index, or overview should point to the source, add the link. If an article gains meaningful evidence, nuance, or correction from the source, integrate it into the body. Do not stop at source-note creation when the source clearly improves existing wiki pages.
 7. Create a new article only when the topic deserves its own durable page.
 8. Run `compile obsidian refresh` and then `compile health`.
+9. Before ending the session, if you ingested more than one source, pause and ask: does the set make a claim, pattern, or tension visible that no single source makes visible? If yes, capture it — extend an existing article, update a map, or draft a synthesis seed in `wiki/maps/`. If no, end the session. This is a cross-source check; per-source absorption belongs in step 6.
 
 ### PDF sources
 
@@ -117,7 +118,8 @@ When answering questions against the wiki:
 2. Read wiki pages before raw files.
 3. Pull raw sources only when needed for verification or missing detail.
 4. Before presenting an answer, check the format triggers above and pick the best fit.
-5. Offer to save durable answers back into the wiki when they will be useful later.
+5. Save durable answers back into the wiki when they will be useful later.
+6. When saving durable material, wire it into the existing wiki structure by updating the relevant article, map, index, or overview page rather than leaving it isolated.
 
 ## Lint Workflow
 
