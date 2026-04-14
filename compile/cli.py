@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import re
+from typing import Any, Callable
+from uuid import uuid4
 
 import click
 from rich.console import Console
@@ -25,6 +27,7 @@ from compile.pdf_artifacts import (
     load_pdf_artifact,
     save_pdf_artifact,
 )
+from compile.resources import resource_path
 from compile.search_index import (
     rebuild_search_index,
     search_index_exists,
@@ -46,6 +49,7 @@ from compile.workspace import (
 console = Console()
 OBSOLETE_GLOBAL_COMMANDS = ("wiki-enrich.md",)
 OBSOLETE_WORKSPACE_COMMANDS = ("enrich.md",)
+IngestEventCallback = Callable[[dict[str, Any]], None]
 
 
 def _load_workspace():
@@ -64,6 +68,36 @@ def _iter_managed_templates(directory: Path, *, obsolete: tuple[str, ...] = ()) 
         for path in directory.iterdir()
         if path.is_file() and path.name not in obsolete
     )
+
+
+def _emit_json(payload: dict[str, Any]) -> None:
+    click.echo(json.dumps(payload, sort_keys=True))
+
+
+def _workspace_payload(config) -> dict[str, Any]:
+    info = get_status(config)
+    return {
+        "path": info["workspace_root"],
+        "topic": info["topic"],
+        "description": info["description"],
+        "rawFiles": info["raw_files"],
+        "processed": info["processed"],
+        "unprocessed": info["unprocessed"],
+        "needsDocumentReview": info["needs_document_review"],
+        "wikiPageCount": info["wiki_pages"],
+    }
+
+
+def _emit_ingest_event(event_callback: IngestEventCallback | None, payload: dict[str, Any]) -> None:
+    if event_callback is not None:
+        event_callback(payload)
+
+
+def _emit_machine_error(message: str, *, context: str | None = None) -> None:
+    payload: dict[str, Any] = {"ok": False, "error": message}
+    if context:
+        payload["context"] = context
+    _emit_json(payload)
 
 
 def _merge_settings_values(existing, template):
@@ -160,6 +194,8 @@ def _ingest_raw_source(
     *,
     raw_path: Path,
     title: str | None = None,
+    job_id: str | None = None,
+    event_callback: IngestEventCallback | None = None,
 ):
     connector = ObsidianConnector(config.workspace_root)
     raw_relative = str(raw_path.relative_to(config.workspace_root)).replace("\\", "/")
@@ -169,6 +205,15 @@ def _ingest_raw_source(
     if raw_path.suffix.lower() == ".pdf":
         desired_title = title or title_from_path(raw_path)
     else:
+        _emit_ingest_event(
+            event_callback,
+            {
+                "event": "extracting",
+                "id": job_id,
+                "raw_path": raw_relative,
+                "source": raw_path.name,
+            },
+        )
         preloaded_extracted = extract_source(raw_path)
         desired_title = title or preloaded_extracted.title
     effective_title, existing_source_page = _resolve_source_title(
@@ -193,6 +238,16 @@ def _ingest_raw_source(
                 page=existing_source_page,
             )
         mark_processed(config, raw_path, [existing_source_page.relative_path])
+        _emit_ingest_event(
+            event_callback,
+            {
+                "event": "preserved",
+                "id": job_id,
+                "note_path": existing_source_page.relative_path,
+                "raw_path": raw_relative,
+                "source": raw_path.name,
+            },
+        )
         return {
             "status": "preserved",
             "page": existing_source_page,
@@ -204,6 +259,15 @@ def _ingest_raw_source(
     if preloaded_extracted is not None:
         extracted = preloaded_extracted
     else:
+        _emit_ingest_event(
+            event_callback,
+            {
+                "event": "extracting",
+                "id": job_id,
+                "raw_path": raw_relative,
+                "source": raw_path.name,
+            },
+        )
         extracted, pdf_artifact = _extract_for_ingest(config, raw_path, raw_relative)
     artifact = build_ingest_artifact(
         raw_relative=raw_relative,
@@ -231,6 +295,17 @@ def _ingest_raw_source(
         relative_path=pin_path,
         extra_frontmatter=merged_frontmatter or None,
     )
+    _emit_ingest_event(
+        event_callback,
+        {
+            "event": "source_note_written",
+            "id": job_id,
+            "note_path": page.relative_path,
+            "raw_path": raw_relative,
+            "source": raw_path.name,
+            "status": "updated" if existing_source_page is not None else "created",
+        },
+    )
 
     if not artifact.metadata_only:
         mark_processed(config, raw_path, [page.relative_path])
@@ -247,11 +322,32 @@ def _ingest_raw_source(
     pages_by_type = collect_pages_by_type(config)
     write_index(config, pages_by_type)
     write_overview(config, pages_by_type)
+    _emit_ingest_event(
+        event_callback,
+        {
+            "event": "navigation_refreshed",
+            "id": job_id,
+            "source": raw_path.name,
+            "index_path": "wiki/index.md",
+            "overview_path": "wiki/overview.md",
+        },
+    )
     log_lines = [
         f"Raw source: {raw_relative}",
         f"Source page: {page.relative_path}",
     ]
     append_log_entry(config, "ingest", artifact.title, log_lines)
+    _emit_ingest_event(
+        event_callback,
+        {
+            "event": "completed",
+            "id": job_id,
+            "note_path": page.relative_path,
+            "raw_path": raw_relative,
+            "source": raw_path.name,
+            "needs_document_review": artifact.needs_document_review,
+        },
+    )
     return {
         "status": "updated" if existing_source_page is not None else "created",
         "page": page,
@@ -270,25 +366,44 @@ def main() -> None:
 @click.argument("topic")
 @click.option("--description", "-d", default="", help="Topic description.")
 @click.option("--path", "-p", default=".", help="Directory to create workspace in.")
-def init(topic: str, description: str, path: str) -> None:
+@click.option("--json-output/--no-json-output", default=False)
+def init(topic: str, description: str, path: str, json_output: bool) -> None:
     """Create a new wiki workspace."""
     root = Path(path).resolve()
     try:
         config = init_workspace(root, topic, description)
+        if json_output:
+            _emit_json({"ok": True, "workspace": _workspace_payload(config)})
+            return
         console.print(f"[green]Workspace initialized:[/green] {config.topic}")
         console.print(f"  Drop sources into: {config.raw_dir}")
         console.print(f"  Wiki pages at: {config.wiki_dir}")
         console.print(f"  Open in Obsidian: File > Open Vault > {root}")
     except FileExistsError:
+        if json_output:
+            _emit_machine_error(f"Workspace already exists at {root}", context="init")
+            raise SystemExit(1)
         console.print(f"[red]Workspace already exists at {root}[/red]")
         raise SystemExit(1)
 
 
 @main.command()
-def status() -> None:
+@click.option("--path", "-p", default=".", help="Workspace root.")
+@click.option("--json-output/--no-json-output", default=False)
+def status(path: str, json_output: bool) -> None:
     """Show workspace status."""
-    config = _load_workspace()
+    try:
+        config = load_config(Path(path).resolve())
+    except FileNotFoundError as exc:
+        if json_output:
+            _emit_machine_error(str(exc), context="status")
+            raise SystemExit(1)
+        console.print("[red]No workspace found. Run 'compile init' first.[/red]")
+        raise SystemExit(1)
     info = get_status(config)
+    if json_output:
+        _emit_json({"ok": True, "workspace": _workspace_payload(config)})
+        return
     table = Table(title=info["topic"])
     table.add_column("", style="bold")
     table.add_column("")
@@ -311,9 +426,42 @@ def status() -> None:
 @click.option("--path", "-p", default=".", help="Workspace root.")
 @click.option("--title", default=None, help="Optional override title for the generated source note.")
 @click.option("--images/--no-images", default=False, help="Download referenced images when ingesting a URL.")
-def ingest(source: str, path: str, title: str | None, images: bool) -> None:
+@click.option("--json-stream/--no-json-stream", default=False)
+@click.option("--job-id", default=None, hidden=True)
+def ingest(source: str, path: str, title: str | None, images: bool, json_stream: bool, job_id: str | None) -> None:
     """Create a source note for a raw artifact or URL."""
-    config = load_config(Path(path).resolve())
+    job_id = job_id or uuid4().hex
+    raw_path: Path | None = None
+
+    def emit_event(payload: dict[str, Any]) -> None:
+        _emit_json({key: value for key, value in payload.items() if value is not None})
+
+    try:
+        config = load_config(Path(path).resolve())
+    except FileNotFoundError as exc:
+        if json_stream:
+            emit_event(
+                {
+                    "event": "failed",
+                    "id": job_id,
+                    "source": source,
+                    "message": str(exc),
+                }
+            )
+            raise SystemExit(1)
+        console.print("[red]No workspace found. Run 'compile init' first.[/red]")
+        raise SystemExit(1)
+
+    if json_stream:
+        emit_event(
+            {
+                "event": "started",
+                "id": job_id,
+                "kind": "ingest",
+                "source": source,
+                "workspace": str(config.workspace_root),
+            }
+        )
 
     if is_url(source):
         try:
@@ -321,24 +469,75 @@ def ingest(source: str, path: str, title: str | None, images: bool) -> None:
                 source, config.raw_dir, download_images=images,
             )
         except Exception as exc:
+            if json_stream:
+                emit_event(
+                    {
+                        "event": "failed",
+                        "id": job_id,
+                        "source": source,
+                        "message": f"Failed to fetch URL: {exc}",
+                    }
+                )
+                raise SystemExit(1)
             console.print(f"[red]Failed to fetch URL:[/red] {exc}")
             raise SystemExit(1)
         if title is None and fetched_title:
             title = fetched_title
-        console.print(f"[green]Fetched URL → [/green]{raw_path.relative_to(config.workspace_root)}")
+        if json_stream:
+            emit_event(
+                {
+                    "event": "fetched",
+                    "id": job_id,
+                    "source": source,
+                    "raw_path": str(raw_path.relative_to(config.workspace_root)).replace("\\", "/"),
+                    "title": fetched_title or title,
+                }
+            )
+        else:
+            console.print(f"[green]Fetched URL → [/green]{raw_path.relative_to(config.workspace_root)}")
     else:
         raw_path = _resolve_raw_source(config.workspace_root, source)
         if not raw_path.exists() or not raw_path.is_file():
+            if json_stream:
+                emit_event(
+                    {
+                        "event": "failed",
+                        "id": job_id,
+                        "source": source,
+                        "message": f"Raw source not found: {raw_path}",
+                    }
+                )
+                raise SystemExit(1)
             console.print(f"[red]Raw source not found:[/red] {raw_path}")
             raise SystemExit(1)
         try:
             raw_path.relative_to(config.workspace_root)
         except ValueError:
+            if json_stream:
+                emit_event(
+                    {
+                        "event": "failed",
+                        "id": job_id,
+                        "source": source,
+                        "message": "Raw source must live inside the workspace root.",
+                    }
+                )
+                raise SystemExit(1)
             console.print("[red]Raw source must live inside the workspace root.[/red]")
             raise SystemExit(1)
         try:
             raw_path.relative_to(config.raw_dir)
         except ValueError:
+            if json_stream:
+                emit_event(
+                    {
+                        "event": "failed",
+                        "id": job_id,
+                        "source": source,
+                        "message": "Source files must be in the raw/ directory.",
+                    }
+                )
+                raise SystemExit(1)
             console.print("[red]Source files must be in the raw/ directory.[/red]")
             console.print(f"  Move the file to {config.raw_dir} and retry.")
             raise SystemExit(1)
@@ -347,10 +546,47 @@ def ingest(source: str, path: str, title: str | None, images: bool) -> None:
             config,
             raw_path=raw_path,
             title=title,
+            job_id=job_id,
+            event_callback=emit_event if json_stream else None,
         )
     except ValueError as exc:
+        if json_stream:
+            emit_event(
+                {
+                    "event": "failed",
+                    "id": job_id,
+                    "source": source,
+                    "raw_path": (
+                        str(raw_path.relative_to(config.workspace_root)).replace("\\", "/")
+                        if raw_path is not None and raw_path.exists()
+                        else None
+                    ),
+                    "message": str(exc),
+                }
+            )
+            raise SystemExit(1)
         console.print(f"[red]{exc}[/red]")
         raise SystemExit(1)
+    except Exception as exc:
+        if json_stream:
+            emit_event(
+                {
+                    "event": "failed",
+                    "id": job_id,
+                    "source": source,
+                    "raw_path": (
+                        str(raw_path.relative_to(config.workspace_root)).replace("\\", "/")
+                        if raw_path is not None and raw_path.exists()
+                        else None
+                    ),
+                    "message": str(exc),
+                }
+            )
+            raise SystemExit(1)
+        raise
+
+    if json_stream:
+        return
 
     if result["status"] == "preserved":
         console.print(f"[yellow]Source already enriched:[/yellow] {result['page'].relative_path}")
@@ -446,7 +682,8 @@ def obsidian_inspect(path: str, json_output: bool) -> None:
 @click.argument("query")
 @click.option("--path", "-p", default=".")
 @click.option("--limit", "-n", default=10)
-def obsidian_search(query: str, path: str, limit: int) -> None:
+@click.option("--json-output/--no-json-output", default=False)
+def obsidian_search(query: str, path: str, limit: int, json_output: bool) -> None:
     """Search wiki pages."""
     root = Path(path).resolve()
     connector = ObsidianConnector(root)
@@ -463,7 +700,13 @@ def obsidian_search(query: str, path: str, limit: int) -> None:
     else:
         hits = connector.search(query, limit=limit)
     if not hits:
+        if json_output:
+            _emit_json({"ok": True, "hits": []})
+            return
         console.print(f"[yellow]No matches:[/yellow] {query}")
+        return
+    if json_output:
+        _emit_json({"ok": True, "hits": [hit.to_dict() for hit in hits]})
         return
     for hit in hits:
         console.print(f"  {hit.title} ({hit.page_type}) — {hit.snippet[:80]}")
@@ -472,14 +715,22 @@ def obsidian_search(query: str, path: str, limit: int) -> None:
 @obsidian.command("page")
 @click.argument("locator")
 @click.option("--path", "-p", default=".")
-def obsidian_page(locator: str, path: str) -> None:
+@click.option("--json-output/--no-json-output", default=False)
+def obsidian_page(locator: str, path: str, json_output: bool) -> None:
     """Show page metadata and body."""
     connector = ObsidianConnector(Path(path).resolve())
     try:
         page = connector.get_page(locator)
     except (FileNotFoundError, ValueError) as e:
+        if json_output:
+            _emit_machine_error(str(e), context="obsidian_page")
+            raise SystemExit(1)
         console.print(f"[red]{e}[/red]")
         raise SystemExit(1)
+
+    if json_output:
+        _emit_json({"ok": True, "page": page.to_dict(include_body=True)})
+        return
 
     console.print(f"\n[bold]{page.title}[/bold] ({page.page_type}, {page.word_count} words)")
     if page.resolved_outbound_links:
@@ -989,7 +1240,7 @@ def install_claude_files(
 
     Returns a dict with keys: installed, skipped, mispointed, obsolete, removed.
     """
-    templates = Path(__file__).parent / "templates"
+    templates = resource_path("templates")
     if not templates.is_dir():
         raise FileNotFoundError(
             f"Template directory not found at {templates}. "
@@ -1049,20 +1300,26 @@ def install_claude_files(
     # settings.local.json
     settings_src = templates / "workspace" / "settings.local.json"
     settings_dest = wiki_path / ".claude" / "settings.local.json"
-    if settings_dest.exists() and not force:
-        skipped.append(str(settings_dest))
-    else:
-        if settings_dest.exists():
-            try:
-                existing_settings = json.loads(settings_dest.read_text())
-                template_settings = json.loads(settings_src.read_text())
-            except json.JSONDecodeError:
+    if settings_dest.exists():
+        try:
+            existing_settings = json.loads(settings_dest.read_text())
+            template_settings = json.loads(settings_src.read_text())
+        except json.JSONDecodeError:
+            if force:
                 settings_dest.write_text(settings_src.read_text())
+                installed.append(str(settings_dest))
             else:
-                merged_settings = _merge_settings_values(existing_settings, template_settings)
-                settings_dest.write_text(json.dumps(merged_settings, indent=2) + "\n")
+                skipped.append(str(settings_dest))
         else:
-            settings_dest.write_text(settings_src.read_text())
+            merged_settings = _merge_settings_values(existing_settings, template_settings)
+            merged_text = json.dumps(merged_settings, indent=2) + "\n"
+            if force or merged_text != settings_dest.read_text():
+                settings_dest.write_text(merged_text)
+                installed.append(str(settings_dest))
+            else:
+                skipped.append(str(settings_dest))
+    else:
+        settings_dest.write_text(settings_src.read_text())
         installed.append(str(settings_dest))
 
     # Workspace commands
@@ -1099,7 +1356,7 @@ def install_claude_files(
 def _resolve_raw_source(workspace_root: Path, source: str) -> Path:
     candidate = Path(source)
     if candidate.is_absolute():
-        return candidate
+        return candidate.resolve()
 
     direct = (workspace_root / candidate).resolve()
     if direct.exists():

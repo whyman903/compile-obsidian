@@ -1,12 +1,12 @@
 Process a raw source into the wiki.
 
-Argument: $ARGUMENTS (filename in `raw/`, or leave blank to process the next unprocessed file)
+Argument: $ARGUMENTS (filename in `raw/`, a URL, or leave blank to process the next unprocessed file)
 
 Use the workspace `CLAUDE.md` as the canonical workflow contract. Follow this command flow:
 
-1. If no argument is given, run `compile status` and pick the next unprocessed source. Otherwise use the provided file.
+1. If no argument is given, run `compile status` and pick the next unprocessed source. If the argument is a URL, use that URL directly. Otherwise use the provided `raw/` file.
 2. Run `compile obsidian search` with key terms from the source to see what already exists.
-3. Run `compile ingest <filename>`. For ugly PDF filenames, pass `--title "Proper Title"`.
+3. Run `compile ingest <source>`, where `<source>` is the URL or `raw/` filename. For ugly PDF filenames, pass `--title "Proper Title"`.
 4. Read the created source note.
 5. Read the raw source itself when the note is weak, incomplete, or needs verification.
 6. For substantial improvements, rewrite the source note with `compile obsidian upsert --body-file ...`.

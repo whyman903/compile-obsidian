@@ -3,6 +3,12 @@
     "allow": [
       "WebSearch",
       "mcp__notion",
+      "Bash(compile status*)",
+      "Bash(compile ingest *)",
+      "Bash(compile obsidian *)",
+      "Bash(compile health*)",
+      "Bash(compile render *)",
+      "Bash(compile schema*)",
       "Edit(.compile/notion-sync-profile.json)",
       "Edit(raw/notion/**)",
       "Bash(compile ingest raw/notion/*)",
