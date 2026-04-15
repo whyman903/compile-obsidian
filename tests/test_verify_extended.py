@@ -164,6 +164,58 @@ class TestAuditVaultContent:
         issues = audit_vault_content(tmp_path)
         assert any(i["type"] == "premature_stability" for i in issues)
 
+    def test_flags_source_without_topic_anchor(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        _write_page(
+            tmp_path / "wiki" / "sources" / "lonely.md",
+            "Lonely Source",
+            "source",
+            "Source note body.\n\nAnother paragraph.",
+        )
+        _refresh(tmp_path)
+
+        issues = audit_vault_content(tmp_path)
+        assert any(i["type"] == "source_without_topic_anchor" for i in issues)
+
+    def test_source_to_source_link_does_not_satisfy_topic_anchor(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        _write_page(
+            tmp_path / "wiki" / "sources" / "source-a.md",
+            "Source A",
+            "source",
+            "See [[Source B]] for related context.\n\nAnother paragraph.",
+        )
+        _write_page(
+            tmp_path / "wiki" / "sources" / "source-b.md",
+            "Source B",
+            "source",
+            "Related source note.\n\nAnother paragraph.",
+        )
+        _refresh(tmp_path)
+
+        issues = audit_vault_content(tmp_path)
+        assert any(i["type"] == "source_without_topic_anchor" and "Source A" in i["title"] for i in issues)
+        assert any(i["type"] == "source_without_topic_anchor" and "Source B" in i["title"] for i in issues)
+
+    def test_article_link_satisfies_topic_anchor(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        _write_page(
+            tmp_path / "wiki" / "articles" / "topic.md",
+            "Topic",
+            "article",
+            "Topic overview.\n\nAnother paragraph.",
+        )
+        _write_page(
+            tmp_path / "wiki" / "sources" / "source.md",
+            "Anchored Source",
+            "source",
+            "Connects to [[Topic]].\n\nAnother paragraph.",
+        )
+        _refresh(tmp_path)
+
+        issues = audit_vault_content(tmp_path)
+        assert not any(i["type"] == "source_without_topic_anchor" for i in issues)
+
     def test_clean_vault_no_issues(self, tmp_path: Path) -> None:
         config = init_workspace(tmp_path, "Test")
         _write_page(

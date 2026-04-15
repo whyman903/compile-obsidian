@@ -33,6 +33,7 @@ compile obsidian search "query"
 compile obsidian page "Title"
 compile obsidian neighbors "Title"
 compile obsidian graph
+compile suggest maps
 compile health
 compile health --json-output
 ```
@@ -93,10 +94,11 @@ When the user adds a source to `raw/` and asks you to process it:
 3. Read the generated source note.
 4. Read the raw source itself when the generated note is weak, incomplete, or needs verification.
 5. Rewrite the source note in place with `compile obsidian upsert --body-file ...` when a substantial improvement is warranted.
-6. Update existing pages that should absorb the source. After `compile ingest`, inspect the source note and search the wiki for durable pages or navigation pages that should incorporate it. If a map, index, or overview should point to the source, add the link. If an article gains meaningful evidence, nuance, or correction from the source, integrate it into the body. Do not stop at source-note creation when the source clearly improves existing wiki pages.
+6. Update existing pages that should absorb the source. After `compile ingest`, inspect the source note and search the wiki for durable pages or navigation pages that should incorporate it. If a map, index, or overview should point to the source, add the link. If an article gains meaningful evidence, nuance, or correction from the source, integrate it into the body. Every source note should end up with at least one meaningful wikilink to an article or map page when such a page already exists.
 7. Create a new article only when the topic deserves its own durable page.
-8. Run `compile obsidian refresh` and then `compile health`.
-9. Before ending the session, if you ingested more than one source, pause and ask: does the set make a claim, pattern, or tension visible that no single source makes visible? If yes, capture it — extend an existing article, update a map, or draft a synthesis seed in `wiki/maps/`. If no, end the session. This is a cross-source check; per-source absorption belongs in step 6.
+8. If no article or map fits, note that gap in the log entry and use `compile suggest maps` to surface existing map candidates or confirm that a broad topic still has no hub.
+9. Run `compile obsidian refresh` and then `compile health`.
+10. Before ending the session, if you ingested more than one source, pause and ask: does the set make a claim, pattern, or tension visible that no single source makes visible? If yes, capture it — extend an existing article, update a map, or draft a synthesis seed in `wiki/maps/`. If no, end the session. This is a cross-source check; per-source absorption belongs in step 6.
 
 ### PDF sources
 
@@ -155,3 +157,4 @@ Optional when relevant: `tags`, `aliases`, `sources`, `source_ids`, `cssclasses`
 6. Save durable outputs back into the wiki.
 7. Keep navigation current.
 8. Verify quote-sensitive material against the raw source.
+9. Keep map pages lightweight and navigational; use whatever structure helps readers browse the topic.

@@ -258,8 +258,11 @@ def test_ingest_template_matches_simplified_workflow(tmp_path: Path) -> None:
     assert "/enrich" not in ingest_content
     assert "<!-- compile:figures:start -->" not in ingest_content
     assert "compile render chart" in ingest_content
+    assert "compile suggest maps" in ingest_content
     assert "workspace `CLAUDE.md`" in ingest_content
     assert "create it only if the user asks for it or explicitly agrees" in ingest_content.lower()
+    assert "Connection Audit" not in ingest_content
+    assert "## Topic Hubs" not in ingest_content
 
 
 def test_install_covers_all_current_template_files(tmp_path: Path) -> None:

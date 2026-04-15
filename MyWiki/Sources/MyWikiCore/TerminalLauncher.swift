@@ -20,12 +20,37 @@ public enum TerminalLauncher {
     /// Build the contents of a `.command` shell script that `cd`s into `directory`,
     /// optionally runs `runningCommand`, and then hands control to an interactive login
     /// shell so the Terminal window stays open after the command finishes.
-    public static func buildLaunchScript(directory: URL, runningCommand: String?) -> String {
+    ///
+    /// If `pendingPrompt` is provided, the prompt is copied to the clipboard and a
+    /// background `osascript` fires `⌘V` at the new Terminal window once Claude has
+    /// had a moment to boot. Claude sees the text land in its input buffer and the
+    /// user can edit or hit return to submit — no manual paste required.
+    public static func buildLaunchScript(
+        directory: URL,
+        runningCommand: String?,
+        pendingPrompt: String? = nil
+    ) -> String {
         var lines: [String] = ["#!/bin/zsh", "set -o pipefail"]
         lines.append("cd " + shellQuote(directory.path))
-        // Put the app-managed compile shim and common Claude install locations on PATH.
-        lines.append("export PATH=\"$PWD/.compile/mywiki-bin:$HOME/.claude/local:/opt/homebrew/bin:/usr/local/bin:$PATH\"")
+        lines.append(
+            "export PATH=\"$PWD/.compile/mywiki-bin:$HOME/.claude/local:/opt/homebrew/bin:/usr/local/bin:$PATH\""
+        )
         lines.append("clear")
+        if let pendingPrompt, !pendingPrompt.isEmpty {
+            lines.append("printf '%s' " + shellQuote(pendingPrompt) + " | pbcopy")
+            lines.append(
+                "printf '\\n\\033[38;5;51m⚡ Drafting into Claude…\\033[0m\\n"
+                + "\\033[2m  Prompt will land in the input when Claude is ready — edit freely, then return to submit.\\033[0m\\n\\n'"
+            )
+            // Fire-and-forget: wait for Claude to finish booting, then send ⌘V to the
+            // frontmost window (which is the Terminal tab we just opened). First run
+            // prompts the user to grant Accessibility permission; after that it is silent.
+            lines.append(
+                "( sleep 1.6 && "
+                + "osascript -e 'tell application \"System Events\" to keystroke \"v\" using command down' "
+                + ">/dev/null 2>&1 ) &"
+            )
+        }
         if let runningCommand, !runningCommand.isEmpty {
             lines.append(runningCommand)
         }
@@ -41,13 +66,21 @@ public enum TerminalLauncher {
     }
 
     @discardableResult
-    public static func writeLaunchScript(directory: URL, runningCommand: String?) throws -> URL {
+    public static func writeLaunchScript(
+        directory: URL,
+        runningCommand: String?,
+        pendingPrompt: String? = nil
+    ) throws -> URL {
         let dir = launchScriptsDirectory()
         let scriptURL = dir.appending(
             path: "launch-\(UUID().uuidString.prefix(8)).command",
             directoryHint: .notDirectory
         )
-        let script = buildLaunchScript(directory: directory, runningCommand: runningCommand)
+        let script = buildLaunchScript(
+            directory: directory,
+            runningCommand: runningCommand,
+            pendingPrompt: pendingPrompt
+        )
         try script.write(to: scriptURL, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes(
             [.posixPermissions: 0o755],
@@ -60,8 +93,16 @@ public enum TerminalLauncher {
     /// the given command. Uses `/usr/bin/open -a Terminal <script>` instead of AppleScript
     /// to avoid the macOS Automation permission prompt.
     @discardableResult
-    public static func launch(directory: URL, runningCommand: String? = nil) throws -> URL {
-        let scriptURL = try writeLaunchScript(directory: directory, runningCommand: runningCommand)
+    public static func launch(
+        directory: URL,
+        runningCommand: String? = nil,
+        pendingPrompt: String? = nil
+    ) throws -> URL {
+        let scriptURL = try writeLaunchScript(
+            directory: directory,
+            runningCommand: runningCommand,
+            pendingPrompt: pendingPrompt
+        )
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/open")

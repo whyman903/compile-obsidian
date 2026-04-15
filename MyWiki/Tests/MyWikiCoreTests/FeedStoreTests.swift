@@ -62,7 +62,7 @@ final class FeedStoreTests: XCTestCase {
         return url
     }
 
-    func testFileEnqueueStagesIntoRawAndDispatchesClaudeIngest() throws {
+    func testFileEnqueueStagesIntoRawAndDispatchesDraftPrompt() throws {
         let dispatcher = RecordingDispatcher()
         let store = FeedStore(dispatcher: dispatcher, logger: makeLogger())
         store.bindWorkspace(workspaceURL)
@@ -78,7 +78,7 @@ final class FeedStoreTests: XCTestCase {
         )
 
         let item = try XCTUnwrap(store.items.first)
-        XCTAssertEqual(item.status, .launched)
+        XCTAssertEqual(item.status, .dispatched)
         XCTAssertEqual(item.source, "sample.md")
         XCTAssertEqual(item.stagedRelativePath, "raw/sample.md")
         XCTAssertEqual(item.prompt, "/ingest raw/sample.md")
@@ -95,10 +95,10 @@ final class FeedStoreTests: XCTestCase {
         XCTAssertEqual(dispatcher.launches.first?.prompt, "/ingest raw/existing.md")
         let item = try XCTUnwrap(store.items.first)
         XCTAssertEqual(item.stagedRelativePath, "raw/existing.md")
-        XCTAssertEqual(item.status, .launched)
+        XCTAssertEqual(item.status, .dispatched)
     }
 
-    func testURLEnqueueDispatchesClaudeIngestURL() throws {
+    func testURLEnqueueDispatchesIngestURL() throws {
         let dispatcher = RecordingDispatcher()
         let store = FeedStore(dispatcher: dispatcher, logger: makeLogger())
         store.bindWorkspace(workspaceURL)
@@ -106,15 +106,65 @@ final class FeedStoreTests: XCTestCase {
         store.enqueue([IngestRequest(id: "job-url", source: .remoteURL("https://example.com/article"))])
 
         XCTAssertEqual(dispatcher.launches.count, 1)
-        XCTAssertEqual(
-            dispatcher.launches.first?.prompt,
-            "/ingest https://example.com/article"
-        )
+        XCTAssertEqual(dispatcher.launches.first?.prompt, "/ingest https://example.com/article")
         let item = try XCTUnwrap(store.items.first)
-        XCTAssertEqual(item.status, .launched)
+        XCTAssertEqual(item.status, .dispatched)
         XCTAssertEqual(item.source, "https://example.com/article")
         XCTAssertEqual(item.prompt, "/ingest https://example.com/article")
         XCTAssertNil(item.stagedRelativePath)
+    }
+
+    func testQueryEnqueueDispatchesQueryPrompt() throws {
+        let dispatcher = RecordingDispatcher()
+        let store = FeedStore(dispatcher: dispatcher, logger: makeLogger())
+        store.bindWorkspace(workspaceURL)
+
+        store.enqueue([IngestRequest(id: "job-q", source: .query("how do vaccines work"))])
+
+        XCTAssertEqual(dispatcher.launches.first?.prompt, "/query how do vaccines work")
+        let item = try XCTUnwrap(store.items.first)
+        XCTAssertEqual(item.status, .dispatched)
+        XCTAssertEqual(item.prompt, "/query how do vaccines work")
+    }
+
+    func testEnqueueWithTrailingTextAppendsContextBelowSlashCommand() throws {
+        let dispatcher = RecordingDispatcher()
+        let store = FeedStore(dispatcher: dispatcher, logger: makeLogger())
+        store.bindWorkspace(workspaceURL)
+
+        let external = writeExternalFile("notes.md")
+        store.enqueue(
+            [IngestRequest(id: "job-ctx", source: .file(external))],
+            trailingText: "Cite the intro carefully.",
+            workspaceURL: workspaceURL
+        )
+
+        let prompt = try XCTUnwrap(dispatcher.launches.first?.prompt)
+        XCTAssertTrue(prompt.hasPrefix("/ingest raw/notes.md"))
+        XCTAssertTrue(prompt.contains("\n\nCite the intro carefully."))
+    }
+
+    func testEnqueueMultipleFilesAppendsEachAsAdditional() throws {
+        let dispatcher = RecordingDispatcher()
+        let store = FeedStore(dispatcher: dispatcher, logger: makeLogger())
+        store.bindWorkspace(workspaceURL)
+
+        let first = writeExternalFile("first.md")
+        let second = writeExternalFile("second.md")
+        store.enqueue(
+            [
+                IngestRequest(id: "job-a", source: .file(first)),
+                IngestRequest(id: "job-b", source: .file(second)),
+            ],
+            trailingText: "",
+            workspaceURL: workspaceURL
+        )
+
+        XCTAssertEqual(dispatcher.launches.count, 1)
+        let prompt = try XCTUnwrap(dispatcher.launches.first?.prompt)
+        XCTAssertTrue(prompt.contains("/ingest raw/first.md"))
+        XCTAssertTrue(prompt.contains("Also ingest: raw/second.md"))
+        XCTAssertEqual(store.items.count, 2)
     }
 
     func testDispatcherFailureIsSurfacedAsFailedItem() throws {
@@ -192,15 +242,36 @@ final class FeedStoreTests: XCTestCase {
         XCTAssertEqual(staged, "https://example.com/a")
     }
 
-    func testClaudeCommandDoubleQuotesAndEscapesPrompt() {
-        XCTAssertEqual(
-            FeedStore.claudeCommand(for: "/ingest raw/sample.md"),
-            "claude \"/ingest raw/sample.md\""
+    func testBuildPromptComposesMultipleSections() {
+        let prompt = FeedStore.buildPrompt(
+            stagedFiles: ["raw/a.md"],
+            urls: ["https://example.com"],
+            query: nil,
+            trailingText: "extra context"
         )
-        XCTAssertEqual(
-            FeedStore.claudeCommand(for: "/wiki-query what is the $plan"),
-            "claude \"/wiki-query what is the \\$plan\""
+        let lines = prompt.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        XCTAssertEqual(lines[0], "/ingest raw/a.md")
+        XCTAssertEqual(lines[1], "/ingest https://example.com")
+        XCTAssertEqual(lines[2], "")
+        XCTAssertEqual(lines[3], "extra context")
+    }
+
+    func testBuildPromptUsesQueryOnlyWhenNoFilesOrUrls() {
+        let promptQueryOnly = FeedStore.buildPrompt(
+            stagedFiles: [],
+            urls: [],
+            query: "what is compulsory vaccination",
+            trailingText: ""
         )
+        XCTAssertEqual(promptQueryOnly, "/query what is compulsory vaccination")
+
+        let promptFilesWin = FeedStore.buildPrompt(
+            stagedFiles: ["raw/a.md"],
+            urls: [],
+            query: "ignore me",
+            trailingText: ""
+        )
+        XCTAssertEqual(promptFilesWin, "/ingest raw/a.md")
     }
 
     func testRelativePathReturnsNilForPathOutsideWorkspace() {

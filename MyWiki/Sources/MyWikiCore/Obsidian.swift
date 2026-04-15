@@ -24,41 +24,81 @@ public enum ObsidianURLBuilder {
         ]
         return components.url
     }
+
+    /// Advanced URI plugin URL for opening the graph view. Returns nil if the vault
+    /// name can't be percent-encoded. Requires the Advanced URI plugin to be installed
+    /// inside Obsidian; otherwise it silently no-ops and falls through to a normal open.
+    public static func openGraphURL(for workspaceURL: URL) -> URL? {
+        let vaultName = workspaceURL.lastPathComponent
+        var components = URLComponents()
+        components.scheme = "obsidian"
+        components.host = "advanced-uri"
+        components.queryItems = [
+            URLQueryItem(name: "vault", value: vaultName),
+            URLQueryItem(name: "commandid", value: "graph:open"),
+        ]
+        return components.url
+    }
 }
 
 @MainActor
 public enum ObsidianOpener {
-    @discardableResult
-    public static func openWorkspace(_ workspaceURL: URL) -> Bool {
-        guard FileManager.default.fileExists(atPath: workspaceURL.path) else {
-            return false
-        }
-        if openWithObsidianUsingOpenCommand([workspaceURL]) {
-            return true
-        }
-        if let url = ObsidianURLBuilder.openVaultURL(for: workspaceURL),
-           NSWorkspace.shared.open(url) {
-            return true
-        }
-        return false
+    public enum Result: Equatable {
+        case opened
+        case notInstalled
+        case vaultMissing
+        case failed(String)
     }
 
     @discardableResult
-    public static func openNote(notePath: String, workspaceURL: URL) -> Bool {
+    public static func openWorkspace(_ workspaceURL: URL) -> Result {
+        guard FileManager.default.fileExists(atPath: workspaceURL.path) else {
+            return .vaultMissing
+        }
+        guard isObsidianInstalled() else {
+            return .notInstalled
+        }
+        if let url = ObsidianURLBuilder.openVaultURL(for: workspaceURL),
+           NSWorkspace.shared.open(url) {
+            return .opened
+        }
+        if openWithObsidianUsingOpenCommand([workspaceURL]) {
+            return .opened
+        }
+        return .failed("Obsidian refused to open the vault.")
+    }
+
+    @discardableResult
+    public static func openNote(notePath: String, workspaceURL: URL) -> Result {
         let fileURL = workspaceURL
             .appending(path: notePath, directoryHint: .notDirectory)
             .standardizedFileURL
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
-            return false
+            return .vaultMissing
         }
-        if openWithObsidianUsingOpenCommand([fileURL]) {
-            return true
+        guard isObsidianInstalled() else {
+            return .notInstalled
         }
         if let url = ObsidianURLBuilder.openFileURL(for: workspaceURL, relativePath: notePath),
            NSWorkspace.shared.open(url) {
-            return true
+            return .opened
         }
-        return false
+        if openWithObsidianUsingOpenCommand([fileURL]) {
+            return .opened
+        }
+        return .failed("Obsidian refused to open the note.")
+    }
+
+    /// Open the exact vault path and let Obsidian stay in control of graph navigation.
+    /// This avoids ambiguous `vault=` routing when multiple vaults share the same name.
+    @discardableResult
+    public static func openGraph(workspaceURL: URL) -> Result {
+        return openWorkspace(workspaceURL)
+    }
+
+    public static func isObsidianInstalled() -> Bool {
+        NSWorkspace.shared.urlForApplication(withBundleIdentifier: "md.obsidian") != nil
+            || FileManager.default.fileExists(atPath: "/Applications/Obsidian.app")
     }
 
     @discardableResult

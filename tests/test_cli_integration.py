@@ -1361,6 +1361,85 @@ class TestObsidianGraphCommand:
         assert "nodes" in result.output or "edges" in result.output
 
 
+class TestSuggestMapsCommand:
+    def test_suggest_maps_reports_existing_map_updates(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        _write_page(
+            tmp_path / "wiki" / "maps" / "evaluation-metrics.md",
+            "Evaluation Metrics",
+            "map",
+            "Tracks evaluation metrics for generated text and code generation.",
+        )
+        _write_page(
+            tmp_path / "wiki" / "sources" / "bertscore.md",
+            "Evaluation Metrics BERTScore",
+            "source",
+            "BERTScore compares generated text using contextual embeddings.\n\nAnother paragraph.",
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["suggest", "maps", "--path", str(tmp_path)])
+
+        assert result.exit_code == 0
+        assert "Suggested map updates" in result.output
+        assert "Evaluation Metrics" in result.output
+        assert "Evaluation Metrics BERTScore" in result.output
+
+    def test_suggest_maps_json_reports_unmatched_unanchored_sources(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        _write_page(
+            tmp_path / "wiki" / "maps" / "evaluation-metrics.md",
+            "Evaluation Metrics",
+            "map",
+            "Tracks evaluation metrics for generated text and code generation.",
+        )
+        _write_page(
+            tmp_path / "wiki" / "sources" / "bertscore.md",
+            "Evaluation Metrics BERTScore",
+            "source",
+            "BERTScore compares generated text using contextual embeddings.\n\nAnother paragraph.",
+        )
+        _write_page(
+            tmp_path / "wiki" / "sources" / "planning.md",
+            "Agentic Planning",
+            "source",
+            "Planning loops coordinate tools and execution.\n\nAnother paragraph.",
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["suggest", "maps", "--path", str(tmp_path), "--json-output"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["ok"] is True
+        assert payload["suggestions"][0]["map_title"] == "Evaluation Metrics"
+        assert payload["suggestions"][0]["source_notes"][0]["title"] == "Evaluation Metrics BERTScore"
+        assert payload["unanchored_sources"][0]["title"] == "Agentic Planning"
+
+    def test_suggest_maps_ignores_source_notes_already_connected_to_article(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        _write_page(
+            tmp_path / "wiki" / "articles" / "topic.md",
+            "Topic",
+            "article",
+            "Topic overview.\n\nAnother paragraph.",
+        )
+        _write_page(
+            tmp_path / "wiki" / "sources" / "source.md",
+            "Connected Source",
+            "source",
+            "Links to [[Topic]].\n\nAnother paragraph.",
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["suggest", "maps", "--path", str(tmp_path), "--json-output"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["suggestions"] == []
+        assert payload["unanchored_sources"] == []
+
+
 class TestObsidianCleanupCommand:
     def test_cleanup_empty_files(self, tmp_path: Path) -> None:
         init_workspace(tmp_path, "Test")

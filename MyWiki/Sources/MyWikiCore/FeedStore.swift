@@ -3,10 +3,7 @@ import Observation
 
 public struct FeedItem: Identifiable, Equatable, Sendable {
     public enum Status: String, Equatable, Sendable {
-        case queued
-        case staging
-        case launching
-        case launched
+        case dispatched
         case failed
     }
 
@@ -17,15 +14,17 @@ public struct FeedItem: Identifiable, Equatable, Sendable {
     public var status: Status
     public var stage: String
     public var errorMessage: String?
+    public var createdAt: Date
 
     public init(
         id: String,
         source: String,
         stagedRelativePath: String? = nil,
         prompt: String? = nil,
-        status: Status = .queued,
-        stage: String = "Queued",
-        errorMessage: String? = nil
+        status: Status = .dispatched,
+        stage: String = "Dispatched",
+        errorMessage: String? = nil,
+        createdAt: Date = Date()
     ) {
         self.id = id
         self.source = source
@@ -34,6 +33,7 @@ public struct FeedItem: Identifiable, Equatable, Sendable {
         self.status = status
         self.stage = stage
         self.errorMessage = errorMessage
+        self.createdAt = createdAt
     }
 }
 
@@ -41,6 +41,7 @@ public struct IngestRequest: Equatable, Sendable {
     public enum Source: Equatable, Sendable {
         case file(URL)
         case remoteURL(String)
+        case query(String)
     }
 
     public let id: String
@@ -56,6 +57,8 @@ public struct IngestRequest: Equatable, Sendable {
         case .file(let url):
             return url.lastPathComponent
         case .remoteURL(let value):
+            return value
+        case .query(let value):
             return value
         }
     }
@@ -84,88 +87,133 @@ public final class FeedStore {
         activeWorkspaceURL = workspaceURL
     }
 
+    /// Convenience for tests and simple callers — stages files and dispatches one
+    /// draft session per request, with no trailing text.
     public func enqueue(_ requests: [IngestRequest]) {
         guard let workspaceURL = activeWorkspaceURL else {
-            for request in requests {
-                var item = FeedItem(id: request.id, source: request.displaySource)
-                item.status = .failed
-                item.stage = "No workspace"
-                item.errorMessage = "Workspace is not ready yet."
-                items.append(item)
-            }
+            failAllWithoutWorkspace(requests)
+            return
+        }
+        enqueue(requests, trailingText: "", workspaceURL: workspaceURL)
+    }
+
+    /// Stage files (if any) and dispatch one draft session that covers the whole
+    /// batch. Files are enumerated in the prompt and `trailingText` (if any) is
+    /// appended as free-form context. Each request ends up as one FeedItem so the
+    /// user can see what ran.
+    public func enqueue(
+        _ requests: [IngestRequest],
+        trailingText: String,
+        workspaceURL: URL
+    ) {
+        guard !requests.isEmpty else {
             return
         }
 
+        var stagedFileLines: [String] = []
+        var queryText: String? = nil
+        var urlTargets: [String] = []
+        var items: [FeedItem] = []
+
         for request in requests {
             var item = FeedItem(id: request.id, source: request.displaySource)
-            items.append(item)
-
             do {
-                let prompt: String
                 switch request.source {
                 case .file(let fileURL):
-                    item.status = .staging
-                    item.stage = "Staging into raw/"
-                    updateItem(item)
                     let stagedPath = try FeedStore.stageSource(
                         for: request,
                         workspaceURL: workspaceURL
                     )
-                    let stagedRelative = FeedStore.relativePath(
+                    let relative = FeedStore.relativePath(
                         for: stagedPath,
                         under: workspaceURL
                     ) ?? fileURL.lastPathComponent
-                    item.stagedRelativePath = stagedRelative
-                    prompt = FeedStore.ingestPrompt(for: stagedRelative)
-                case .remoteURL(let urlString):
-                    prompt = FeedStore.ingestPrompt(forURL: urlString)
+                    item.stagedRelativePath = relative
+                    stagedFileLines.append(relative)
+                case .remoteURL(let value):
+                    urlTargets.append(value)
+                case .query(let value):
+                    queryText = value
                 }
-
-                item.prompt = prompt
-                item.status = .launching
-                item.stage = "Opening Terminal"
-                updateItem(item)
-
-                try dispatcher.dispatch(prompt: prompt, workspaceURL: workspaceURL)
-
-                item.status = .launched
-                item.stage = "Claude running in Terminal"
-                updateItem(item)
             } catch {
-                logger.log("Failed to launch ingest for \(request.displaySource): \(error)")
                 item.status = .failed
-                item.stage = "Failed"
+                item.stage = "Staging failed"
                 item.errorMessage = error.localizedDescription
-                updateItem(item)
+            }
+            items.append(item)
+        }
+
+        let prompt = Self.buildPrompt(
+            stagedFiles: stagedFileLines,
+            urls: urlTargets,
+            query: queryText,
+            trailingText: trailingText
+        )
+
+        for index in items.indices where items[index].status != .failed {
+            items[index].prompt = prompt
+        }
+
+        self.items.append(contentsOf: items)
+
+        guard items.contains(where: { $0.status != .failed }) else {
+            return
+        }
+
+        do {
+            try dispatcher.dispatch(prompt: prompt, workspaceURL: workspaceURL)
+        } catch {
+            logger.log("Dispatcher failed for prompt \(prompt): \(error)")
+            for index in self.items.indices
+            where items.contains(where: { $0.id == self.items[index].id }) && self.items[index].status != .failed {
+                self.items[index].status = .failed
+                self.items[index].stage = "Failed"
+                self.items[index].errorMessage = error.localizedDescription
             }
         }
     }
 
-    private func updateItem(_ item: FeedItem) {
-        if let index = items.firstIndex(where: { $0.id == item.id }) {
-            items[index] = item
+    private func failAllWithoutWorkspace(_ requests: [IngestRequest]) {
+        for request in requests {
+            var item = FeedItem(id: request.id, source: request.displaySource)
+            item.status = .failed
+            item.stage = "No workspace"
+            item.errorMessage = "Workspace is not ready yet."
+            items.append(item)
         }
     }
 
-    public static func ingestPrompt(for stagedRelativePath: String) -> String {
-        "/ingest \(stagedRelativePath)"
-    }
-
-    public static func ingestPrompt(forURL url: String) -> String {
-        "/ingest \(url)"
-    }
-
-    public static func claudeCommand(for prompt: String) -> String {
-        "claude \(doubleQuoteForShell(prompt))"
-    }
-
-    public static func doubleQuoteForShell(_ value: String) -> String {
-        let escaped = value
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-            .replacingOccurrences(of: "$", with: "\\$")
-            .replacingOccurrences(of: "`", with: "\\`")
-        return "\"" + escaped + "\""
+    static func buildPrompt(
+        stagedFiles: [String],
+        urls: [String],
+        query: String?,
+        trailingText: String
+    ) -> String {
+        var lines: [String] = []
+        if !stagedFiles.isEmpty {
+            if stagedFiles.count == 1 {
+                lines.append("/ingest \(stagedFiles[0])")
+            } else {
+                lines.append("/ingest \(stagedFiles[0])")
+                for extra in stagedFiles.dropFirst() {
+                    lines.append("Also ingest: \(extra)")
+                }
+            }
+        }
+        for url in urls {
+            lines.append("/ingest \(url)")
+        }
+        if let query, !query.isEmpty, stagedFiles.isEmpty, urls.isEmpty {
+            lines.append("/query \(query)")
+        }
+        let trailing = trailingText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trailing.isEmpty {
+            if !lines.isEmpty {
+                lines.append("")
+            }
+            lines.append(trailing)
+        }
+        return lines.joined(separator: "\n")
     }
 
     public static func relativePath(for absolutePath: String, under workspaceURL: URL) -> String? {
@@ -184,6 +232,8 @@ public final class FeedStore {
     static func stageSource(for request: IngestRequest, workspaceURL: URL) throws -> String {
         switch request.source {
         case .remoteURL(let value):
+            return value
+        case .query(let value):
             return value
         case .file(let fileURL):
             let fileManager = FileManager.default

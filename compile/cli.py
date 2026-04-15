@@ -34,6 +34,7 @@ from compile.search_index import (
     search_pdf_index,
     sync_pdf_search_index,
 )
+from compile.suggest import suggest_map_updates
 from compile.text import extract_source, is_url, title_from_path
 from compile.workspace import (
     append_log_entry,
@@ -891,6 +892,52 @@ def obsidian_upsert(
             pass  # non-fatal: source tracking is best-effort
 
     console.print(f"[green]Upserted[/green] {page.relative_path}")
+
+
+@main.group()
+def suggest() -> None:
+    """Surface non-mutating editorial suggestions."""
+
+
+@suggest.command("maps")
+@click.option("--path", "-p", default=".")
+@click.option("--limit", default=10, show_default=True, type=int)
+@click.option("--json-output/--no-json-output", default=False)
+def suggest_maps(path: str, limit: int, json_output: bool) -> None:
+    """Suggest existing map pages that should absorb unanchored source notes."""
+    connector = ObsidianConnector(Path(path).resolve())
+    suggestions, unanchored_sources = suggest_map_updates(connector, limit=max(limit, 1))
+
+    if json_output:
+        _emit_json(
+            {
+                "ok": True,
+                "suggestions": [suggestion.to_dict() for suggestion in suggestions],
+                "unanchored_sources": [
+                    {"title": page.title, "relative_path": page.relative_path}
+                    for page in unanchored_sources
+                ],
+            }
+        )
+        return
+
+    if suggestions:
+        console.print("[bold]Suggested map updates[/bold]")
+        for suggestion in suggestions:
+            console.print(
+                f"  {suggestion.map_title} ({suggestion.map_path}) — "
+                f"{len(suggestion.source_notes)} source note(s), score {suggestion.score}"
+            )
+            for source_page in suggestion.source_notes:
+                console.print(f"    - {source_page.title} ({source_page.relative_path})")
+            console.print(f"    Reason: {suggestion.reason}")
+    else:
+        console.print("[dim]No obvious existing map updates found.[/dim]")
+
+    if unanchored_sources:
+        console.print("\n[bold]Unanchored source notes[/bold]")
+        for page in unanchored_sources:
+            console.print(f"  - {page.title} ({page.relative_path})")
 
 
 @main.group()

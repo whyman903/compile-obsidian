@@ -7,7 +7,7 @@ public final class AppLogger: @unchecked Sendable {
     private let fileManager: FileManager
     private let maxBytes: Int
     private let keepFiles: Int
-    private let queue = DispatchQueue(label: "com.walkerhyman.mywiki.logger")
+    private let queue = DispatchQueue(label: "com.commonplace.mywiki.logger")
 
     public init(
         logDirectory: URL? = nil,
