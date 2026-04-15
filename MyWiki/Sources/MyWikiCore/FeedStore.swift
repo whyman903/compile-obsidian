@@ -1,8 +1,8 @@
 import Foundation
 import Observation
 
-public struct FeedItem: Identifiable, Equatable, Sendable {
-    public enum Status: String, Equatable, Sendable {
+public struct FeedItem: Identifiable, Equatable, Codable, Sendable {
+    public enum Status: String, Equatable, Codable, Sendable {
         case dispatched
         case failed
     }
@@ -76,15 +76,47 @@ public final class FeedStore {
 
     private let dispatcher: IngestDispatcher
     private let logger: AppLogger
+    private let defaults: UserDefaults
+    private let encoder = JSONEncoder()
+    private let decoder = JSONDecoder()
+    private let storageKeyPrefix = "feedItems."
     private var activeWorkspaceURL: URL?
 
-    public init(dispatcher: IngestDispatcher, logger: AppLogger) {
+    public init(
+        dispatcher: IngestDispatcher,
+        logger: AppLogger,
+        defaults: UserDefaults = .standard
+    ) {
         self.dispatcher = dispatcher
         self.logger = logger
+        self.defaults = defaults
     }
 
     public func bindWorkspace(_ workspaceURL: URL) {
         activeWorkspaceURL = workspaceURL
+        loadItems(for: workspaceURL)
+    }
+
+    @discardableResult
+    public func recordLocalQuery(_ question: String) -> String? {
+        let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return nil
+        }
+        guard activeWorkspaceURL != nil else {
+            failAllWithoutWorkspace([IngestRequest(source: .query(trimmed))])
+            return items.last?.id
+        }
+
+        let item = FeedItem(
+            id: UUID().uuidString,
+            source: trimmed,
+            prompt: trimmed,
+            stage: "Asked"
+        )
+        items.append(item)
+        persistItems()
+        return item.id
     }
 
     /// Convenience for tests and simple callers — stages files and dispatches one
@@ -155,6 +187,7 @@ public final class FeedStore {
         }
 
         self.items.append(contentsOf: items)
+        persistItems()
 
         guard items.contains(where: { $0.status != .failed }) else {
             return
@@ -170,6 +203,7 @@ public final class FeedStore {
                 self.items[index].stage = "Failed"
                 self.items[index].errorMessage = error.localizedDescription
             }
+            persistItems()
         }
     }
 
@@ -180,6 +214,48 @@ public final class FeedStore {
             item.stage = "No workspace"
             item.errorMessage = "Workspace is not ready yet."
             items.append(item)
+        }
+        persistItems()
+    }
+
+    public func markFailed(id: String, message: String) {
+        guard let index = items.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+        items[index].status = .failed
+        items[index].stage = "Failed"
+        items[index].errorMessage = message
+        persistItems()
+    }
+
+    private func storageKey(for workspaceURL: URL) -> String {
+        let path = workspaceURL.resolvingSymlinksInPath().standardizedFileURL.path
+        return storageKeyPrefix + path
+    }
+
+    private func loadItems(for workspaceURL: URL) {
+        let key = storageKey(for: workspaceURL)
+        guard let data = defaults.data(forKey: key) else {
+            items = []
+            return
+        }
+        do {
+            items = try decoder.decode([FeedItem].self, from: data)
+        } catch {
+            logger.log("FeedStore failed to decode persisted items for \(workspaceURL.path): \(error)")
+            items = []
+            defaults.removeObject(forKey: key)
+        }
+    }
+
+    private func persistItems() {
+        guard let activeWorkspaceURL else { return }
+        let key = storageKey(for: activeWorkspaceURL)
+        do {
+            let data = try encoder.encode(items)
+            defaults.set(data, forKey: key)
+        } catch {
+            logger.log("FeedStore failed to encode persisted items for \(activeWorkspaceURL.path): \(error)")
         }
     }
 

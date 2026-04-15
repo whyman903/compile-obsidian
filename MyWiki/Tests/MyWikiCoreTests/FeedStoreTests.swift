@@ -24,6 +24,8 @@ final class FeedStoreTests: XCTestCase {
     private var tempDirectory: URL!
     private var workspaceURL: URL!
     private var rawDirectory: URL!
+    private var defaults: UserDefaults!
+    private var defaultsSuiteName: String!
 
     override func setUp() async throws {
         try await super.setUp()
@@ -32,15 +34,23 @@ final class FeedStoreTests: XCTestCase {
         workspaceURL = tempDirectory.appending(path: "workspace", directoryHint: .isDirectory)
         rawDirectory = workspaceURL.appending(path: "raw", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: rawDirectory, withIntermediateDirectories: true)
+        defaultsSuiteName = "FeedStoreTests-\(UUID().uuidString)"
+        defaults = UserDefaults(suiteName: defaultsSuiteName)
+        defaults.removePersistentDomain(forName: defaultsSuiteName)
     }
 
     override func tearDown() async throws {
+        if let defaults {
+            defaults.removePersistentDomain(forName: defaultsSuiteName)
+        }
         if let cleanupURL = tempDirectory {
             try? FileManager.default.removeItem(at: cleanupURL)
         }
         tempDirectory = nil
         workspaceURL = nil
         rawDirectory = nil
+        defaults = nil
+        defaultsSuiteName = nil
         try await super.tearDown()
     }
 
@@ -64,7 +74,7 @@ final class FeedStoreTests: XCTestCase {
 
     func testFileEnqueueStagesIntoRawAndDispatchesDraftPrompt() throws {
         let dispatcher = RecordingDispatcher()
-        let store = FeedStore(dispatcher: dispatcher, logger: makeLogger())
+        let store = FeedStore(dispatcher: dispatcher, logger: makeLogger(), defaults: defaults)
         store.bindWorkspace(workspaceURL)
 
         let external = writeExternalFile("sample.md")
@@ -86,7 +96,7 @@ final class FeedStoreTests: XCTestCase {
 
     func testFileAlreadyInRawIsDispatchedInPlace() throws {
         let dispatcher = RecordingDispatcher()
-        let store = FeedStore(dispatcher: dispatcher, logger: makeLogger())
+        let store = FeedStore(dispatcher: dispatcher, logger: makeLogger(), defaults: defaults)
         store.bindWorkspace(workspaceURL)
 
         let existing = writeRawFile("existing.md")
@@ -100,7 +110,7 @@ final class FeedStoreTests: XCTestCase {
 
     func testURLEnqueueDispatchesIngestURL() throws {
         let dispatcher = RecordingDispatcher()
-        let store = FeedStore(dispatcher: dispatcher, logger: makeLogger())
+        let store = FeedStore(dispatcher: dispatcher, logger: makeLogger(), defaults: defaults)
         store.bindWorkspace(workspaceURL)
 
         store.enqueue([IngestRequest(id: "job-url", source: .remoteURL("https://example.com/article"))])
@@ -116,7 +126,7 @@ final class FeedStoreTests: XCTestCase {
 
     func testQueryEnqueueDispatchesQueryPrompt() throws {
         let dispatcher = RecordingDispatcher()
-        let store = FeedStore(dispatcher: dispatcher, logger: makeLogger())
+        let store = FeedStore(dispatcher: dispatcher, logger: makeLogger(), defaults: defaults)
         store.bindWorkspace(workspaceURL)
 
         store.enqueue([IngestRequest(id: "job-q", source: .query("how do vaccines work"))])
@@ -127,9 +137,28 @@ final class FeedStoreTests: XCTestCase {
         XCTAssertEqual(item.prompt, "/query how do vaccines work")
     }
 
+    func testRecordLocalQueryPersistsWithoutDispatching() throws {
+        let dispatcher = RecordingDispatcher()
+        let store = FeedStore(dispatcher: dispatcher, logger: makeLogger(), defaults: defaults)
+        store.bindWorkspace(workspaceURL)
+
+        let id = try XCTUnwrap(store.recordLocalQuery("what changed in SIDE?"))
+
+        XCTAssertTrue(dispatcher.launches.isEmpty)
+        let item = try XCTUnwrap(store.items.first(where: { $0.id == id }))
+        XCTAssertEqual(item.source, "what changed in SIDE?")
+        XCTAssertEqual(item.prompt, "what changed in SIDE?")
+        XCTAssertEqual(item.stage, "Asked")
+        XCTAssertEqual(item.status, .dispatched)
+
+        let reloaded = FeedStore(dispatcher: dispatcher, logger: makeLogger(), defaults: defaults)
+        reloaded.bindWorkspace(workspaceURL)
+        XCTAssertEqual(reloaded.items.first?.source, "what changed in SIDE?")
+    }
+
     func testEnqueueWithTrailingTextAppendsContextBelowSlashCommand() throws {
         let dispatcher = RecordingDispatcher()
-        let store = FeedStore(dispatcher: dispatcher, logger: makeLogger())
+        let store = FeedStore(dispatcher: dispatcher, logger: makeLogger(), defaults: defaults)
         store.bindWorkspace(workspaceURL)
 
         let external = writeExternalFile("notes.md")
@@ -146,7 +175,7 @@ final class FeedStoreTests: XCTestCase {
 
     func testEnqueueMultipleFilesAppendsEachAsAdditional() throws {
         let dispatcher = RecordingDispatcher()
-        let store = FeedStore(dispatcher: dispatcher, logger: makeLogger())
+        let store = FeedStore(dispatcher: dispatcher, logger: makeLogger(), defaults: defaults)
         store.bindWorkspace(workspaceURL)
 
         let first = writeExternalFile("first.md")
@@ -174,7 +203,7 @@ final class FeedStoreTests: XCTestCase {
             code: 42,
             userInfo: [NSLocalizedDescriptionKey: "terminal closed"]
         )
-        let store = FeedStore(dispatcher: dispatcher, logger: makeLogger())
+        let store = FeedStore(dispatcher: dispatcher, logger: makeLogger(), defaults: defaults)
         store.bindWorkspace(workspaceURL)
 
         let external = writeExternalFile("boom.md")
@@ -187,7 +216,7 @@ final class FeedStoreTests: XCTestCase {
 
     func testEnqueueWithoutWorkspaceFailsWithClearMessage() throws {
         let dispatcher = RecordingDispatcher()
-        let store = FeedStore(dispatcher: dispatcher, logger: makeLogger())
+        let store = FeedStore(dispatcher: dispatcher, logger: makeLogger(), defaults: defaults)
 
         store.enqueue([IngestRequest(id: "job-no-ws", source: .remoteURL("https://example.com"))])
 
@@ -277,5 +306,37 @@ final class FeedStoreTests: XCTestCase {
     func testRelativePathReturnsNilForPathOutsideWorkspace() {
         let outside = "/tmp/elsewhere/file.md"
         XCTAssertNil(FeedStore.relativePath(for: outside, under: workspaceURL))
+    }
+
+    func testPersistedItemsReloadWhenStoreReopensSameWorkspace() throws {
+        let dispatcher = RecordingDispatcher()
+
+        let firstStore = FeedStore(dispatcher: dispatcher, logger: makeLogger(), defaults: defaults)
+        firstStore.bindWorkspace(workspaceURL)
+        firstStore.enqueue([IngestRequest(id: "job-q", source: .query("how do vaccines work"))])
+
+        let secondStore = FeedStore(dispatcher: dispatcher, logger: makeLogger(), defaults: defaults)
+        secondStore.bindWorkspace(workspaceURL)
+
+        let item = try XCTUnwrap(secondStore.items.first)
+        XCTAssertEqual(secondStore.items.count, 1)
+        XCTAssertEqual(item.source, "how do vaccines work")
+        XCTAssertEqual(item.prompt, "/query how do vaccines work")
+        XCTAssertEqual(item.status, .dispatched)
+    }
+
+    func testPersistedItemsAreScopedPerWorkspace() throws {
+        let dispatcher = RecordingDispatcher()
+        let otherWorkspaceURL = tempDirectory.appending(path: "workspace-2", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: otherWorkspaceURL, withIntermediateDirectories: true)
+
+        let firstStore = FeedStore(dispatcher: dispatcher, logger: makeLogger(), defaults: defaults)
+        firstStore.bindWorkspace(workspaceURL)
+        firstStore.enqueue([IngestRequest(id: "job-q", source: .query("first workspace"))])
+
+        let secondStore = FeedStore(dispatcher: dispatcher, logger: makeLogger(), defaults: defaults)
+        secondStore.bindWorkspace(otherWorkspaceURL)
+
+        XCTAssertTrue(secondStore.items.isEmpty)
     }
 }

@@ -54,6 +54,23 @@ private final class NoopQueryRunner: ClaudeQueryRunning, @unchecked Sendable {
     ) async throws {}
 }
 
+private final class SuccessfulQueryRunner: ClaudeQueryRunning, @unchecked Sendable {
+    let onRun: @Sendable () -> Void
+
+    init(onRun: @escaping @Sendable () -> Void = {}) {
+        self.onRun = onRun
+    }
+
+    func runQuery(
+        prompt: String,
+        workspaceURL: URL,
+        onEvent: @escaping @Sendable (ClaudeQueryEvent) async -> Void
+    ) async throws {
+        onRun()
+        await onEvent(.finished(text: "answer", costUSD: 0.01, durationMs: 250, permissionDenials: []))
+    }
+}
+
 @MainActor
 final class AppModelTests: XCTestCase {
     private var tempDirectory: URL!
@@ -148,5 +165,47 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(fakeRunner.requestedPageLocators, ["Planner"])
         XCTAssertEqual(openedNotePath, "wiki/articles/planner.md")
         XCTAssertEqual(openedWorkspacePath, workspaceURL.path)
+    }
+
+    func testSendQueryAddsInAppQueryToFeedStore() async throws {
+        let workspaceURL = tempDirectory.appending(path: "wiki", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+
+        let info = WorkspaceInfo(
+            path: workspaceURL.path,
+            topic: "My Wiki",
+            description: "Test workspace",
+            rawFiles: 0,
+            processed: 0,
+            unprocessed: 0,
+            needsDocumentReview: 0,
+            wikiPageCount: 1
+        )
+        let fakeRunner = FakeCompileRunner(
+            workspaceInfo: info,
+            pageResult: try makePage(title: "Planner", relativePath: "wiki/articles/planner.md")
+        )
+        defaults.set(workspaceURL.path, forKey: "currentWorkspacePath")
+
+        let ranQuery = expectation(description: "query runner called")
+        let model = AppModel(
+            runner: fakeRunner,
+            dispatcher: NoopDispatcher(),
+            queryRunner: SuccessfulQueryRunner(onRun: { ranQuery.fulfill() }),
+            logger: AppLogger(logDirectory: tempDirectory.appending(path: "logs", directoryHint: .isDirectory)),
+            defaults: defaults,
+            fileManager: .default,
+            openWorkspaceHandler: { _ in .opened },
+            openNoteHandler: { _, _ in .opened },
+            openGraphHandler: { _ in .opened }
+        )
+
+        await model.bootstrapIfNeeded()
+        model.sendQuery("What changed in SIDE?")
+
+        await fulfillment(of: [ranQuery], timeout: 1.0)
+        XCTAssertEqual(model.feedStore.items.count, 1)
+        XCTAssertEqual(model.feedStore.items.first?.source, "What changed in SIDE?")
+        XCTAssertEqual(model.feedStore.items.first?.prompt, "What changed in SIDE?")
     }
 }

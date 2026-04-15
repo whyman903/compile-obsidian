@@ -46,7 +46,7 @@ public final class AppModel {
         let resolvedDispatcher = dispatcher ?? TerminalClaudeDispatcher(logger: logger)
         self.dispatcher = resolvedDispatcher
         self.queryRunner = queryRunner ?? ClaudeQueryRunner(logger: logger)
-        self.feedStore = FeedStore(dispatcher: resolvedDispatcher, logger: logger)
+        self.feedStore = FeedStore(dispatcher: resolvedDispatcher, logger: logger, defaults: defaults)
         self.defaults = defaults
         self.fileManager = fileManager
         self.openWorkspaceHandler = openWorkspaceHandler
@@ -112,6 +112,7 @@ public final class AppModel {
 
         activeQueryTask?.cancel()
         querySession.start(question: trimmed)
+        let feedItemID = feedStore.recordLocalQuery(trimmed)
 
         let workspaceURL = workspace.url
         let session = querySession
@@ -126,7 +127,7 @@ public final class AppModel {
             var wikiContext = ""
             do {
                 await MainActor.run { session.updateStatusDetail("Searching wiki…") }
-                let hits = try await compileRunner.search(query: trimmed, at: workspaceURL, limit: 3)
+                let hits = try await compileRunner.search(query: trimmed, at: workspaceURL, limit: 10)
                 log.log("sendQuery: search returned \(hits.count) hits")
                 if !hits.isEmpty {
                     await MainActor.run { session.updateStatusDetail("Reading pages…") }
@@ -182,6 +183,9 @@ public final class AppModel {
             } catch {
                 await MainActor.run {
                     session.fail(error.localizedDescription)
+                    if let feedItemID {
+                        self?.feedStore.markFailed(id: feedItemID, message: error.localizedDescription)
+                    }
                 }
             }
             await MainActor.run { [weak self] in
@@ -425,9 +429,9 @@ public final class AppModel {
                 section += "\n\(summary)"
             }
             if let body = page.body, !body.isEmpty {
-                let truncated = String(body.prefix(2000))
+                let truncated = String(body.prefix(5000))
                 section += "\n\n\(truncated)"
-                if body.count > 2000 {
+                if body.count > 5000 {
                     section += "\n[truncated]"
                 }
             }
