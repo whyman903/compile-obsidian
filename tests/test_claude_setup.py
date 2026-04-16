@@ -53,6 +53,8 @@ def test_fresh_install(tmp_path: Path) -> None:
     workspace_claude = (ws / "CLAUDE.md").read_text()
     assert "markdown paragraphs are the fallback" in workspace_claude.lower()
     assert "compile render canvas" in workspace_claude
+    assert "low-level page writes" in workspace_claude.lower()
+    assert "below the fold" in workspace_claude.lower()
     assert "direct pdf or document understanding" in workspace_claude.lower()
     assert "compile source packet" not in workspace_claude
     assert "## Enrich Workflow" not in workspace_claude
@@ -263,6 +265,55 @@ def test_ingest_template_matches_simplified_workflow(tmp_path: Path) -> None:
     assert "create it only if the user asks for it or explicitly agrees" in ingest_content.lower()
     assert "Connection Audit" not in ingest_content
     assert "## Topic Hubs" not in ingest_content
+    # Two-phase structure: enrichment and wiring are explicit.
+    assert "Phase A" in ingest_content
+    assert "Phase B" in ingest_content
+    assert "## Themes" in ingest_content
+    assert "## Key Claims" in ingest_content
+    assert "compile obsidian neighbors" in ingest_content
+    assert "direct edits during `/ingest` are limited to the source note plus 1–3 theme anchors" in ingest_content
+
+
+def test_claude_md_has_status_discipline_and_synthesis_guidance(tmp_path: Path) -> None:
+    ws = _make_workspace(tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+    install_claude_files(ws, home, force=False)
+    claude_md = (ws / "CLAUDE.md").read_text()
+    assert "Status Discipline" in claude_md
+    assert "What Good Synthesis Looks Like" in claude_md
+    assert "Surface disagreement" in claude_md
+    assert "> [!warning] Disagreement" in claude_md
+    # Two-phase ingest structure lives in the contract.
+    assert "Phase A" in claude_md
+    assert "Phase B" in claude_md
+
+
+def test_synthesize_command_is_installed(tmp_path: Path) -> None:
+    ws = _make_workspace(tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+    install_claude_files(ws, home, force=False)
+    synthesize_path = ws / ".claude" / "commands" / "synthesize.md"
+    assert synthesize_path.exists()
+    content = synthesize_path.read_text()
+    assert "compile health --json-output" in content
+    assert "source_to_knowledge_page_ratio" in content
+    assert "compile suggest maps" in content
+    assert "compile obsidian neighbors" in content
+    assert "broader edits belong" in content
+    assert "keep each pass bounded to one chosen theme or cluster" in content
+    # Wording is consistent with the renamed metric.
+    assert "source-to-article ratio" not in content
+
+
+def test_query_template_hides_upsert_behind_output_save_intent(tmp_path: Path) -> None:
+    ws = _make_workspace(tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+    install_claude_files(ws, home, force=False)
+    query_content = (ws / ".claude" / "commands" / "query.md").read_text()
+    assert "save it as an `output` page using the low-level page writer" in query_content
 
 
 def test_install_covers_all_current_template_files(tmp_path: Path) -> None:

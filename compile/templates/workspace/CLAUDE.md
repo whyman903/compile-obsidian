@@ -42,15 +42,23 @@ compile health --json-output
 
 ```bash
 compile ingest <source>
-compile obsidian upsert "Title" \
-  --page-type article \
-  --body-file /tmp/page.md
 compile obsidian refresh
 compile obsidian cleanup
 compile schema
 compile render canvas <title> --nodes-file /tmp/nodes.json [--edges-file /tmp/edges.json]
 compile render marp <title> --body-file /tmp/deck.md
 compile render chart <title> --script-file /tmp/chart.py
+```
+
+### Low-level page writes
+
+Use this only as the executor beneath the workflows above, or for deliberate manual repair:
+
+```bash
+compile obsidian upsert "Title" \
+  --page-type article \
+  --status emerging \
+  --body-file /tmp/page.md
 ```
 
 ### Connected workspace commands
@@ -61,7 +69,8 @@ compile render chart <title> --script-file /tmp/chart.py
 ### Tool selection
 
 - Search before creating pages. Prefer updating an existing page over spawning a near-duplicate.
-- Prefer `compile obsidian upsert --body-file ...` for substantial edits.
+- The slash-command workflows are the primary contract. Keep `compile obsidian upsert` below the fold: use it when a workflow needs to rewrite or retag a page.
+- Prefer `compile obsidian upsert --body-file ...` when a direct page write is necessary.
 - Run `compile obsidian refresh` after page changes, then `compile health`.
 - Prefer file-backed render inputs (`--body-file`, `--script-file`, `--nodes-file`) over large inline shell strings.
 
@@ -87,18 +96,33 @@ Do not create rendered artifacts by default for routine notes or answers. Offer 
 
 ## Ingest Workflow
 
-When the user adds a source to `raw/` and asks you to process it:
+When the user adds a source to `raw/` and asks you to process it, work through two phases. Phase A stands up the source note. Phase B wires it into the wiki and is mandatory — a source note disconnected from any article or map is incomplete.
+
+### Phase A — Enrich the source note
 
 1. Search the wiki first for existing related pages.
 2. Run `compile ingest <filename>` to register the source and create a first-pass source note.
 3. Read the generated source note.
 4. Read the raw source itself when the generated note is weak, incomplete, or needs verification.
-5. Rewrite the source note in place with `compile obsidian upsert --body-file ...` when a substantial improvement is warranted.
-6. Update existing pages that should absorb the source. After `compile ingest`, inspect the source note and search the wiki for durable pages or navigation pages that should incorporate it. If a map, index, or overview should point to the source, add the link. If an article gains meaningful evidence, nuance, or correction from the source, integrate it into the body. Every source note should end up with at least one meaningful wikilink to an article or map page when such a page already exists.
-7. Create a new article only when the topic deserves its own durable page.
-8. If no article or map fits, note that gap in the log entry and use `compile suggest maps` to surface existing map candidates or confirm that a broad topic still has no hub.
-9. Run `compile obsidian refresh` and then `compile health`.
-10. Before ending the session, if you ingested more than one source, pause and ask: does the set make a claim, pattern, or tension visible that no single source makes visible? If yes, capture it — extend an existing article, update a map, or draft a synthesis seed in `wiki/maps/`. If no, end the session. This is a cross-source check; per-source absorption belongs in step 6.
+5. When a substantial improvement is warranted, rewrite the source note in place. Use the low-level page writer with `--body-file` for the actual write. When you rewrite, add:
+   - A `## Themes` section listing 1–3 broader themes this source belongs to, each with a `[[wikilink]]` to the existing article or map that covers it (or a plain theme name when no page exists yet).
+   - A `## Key Claims` section naming the main arguments or findings, each with a one-line note on evidence strength (e.g., "strong: cites longitudinal study", "weak: assertion without citation").
+
+### Phase B — Wire into the wiki
+
+Do not skip this phase. A source note that is not linked from any article or map page, and has no outbound wikilinks to one, is incomplete.
+
+6. **Locality guard.** During ingest, direct edits are limited to the source note plus 1–3 theme anchors identified here. If a useful change would reach beyond those anchors into a broader cluster, defer it to `/lint` or `/synthesize`.
+7. **Identify themes.** Name 1–3 broader themes this source belongs to (e.g., "evaluation metrics", "animal ethics"). If step 5 added a `## Themes` section, start from those. If the source was too thin to rewrite, or you skipped the rewrite because the generated note was already faithful, derive the themes now from whatever content is available — the title, summary, and any prose already in the note.
+8. **Wire into existing structure.** For each theme:
+   - Search the wiki for an existing article or map.
+   - If one exists and this source strengthens it, treat that page as the anchor. Update only that anchor page to incorporate the source's evidence or nuance, and ensure a `[[wikilink]]` connects the source note and the article/map (either outbound from the source note or via the anchor page citing `[[Source Title]]`).
+   - If no article exists but 3+ sources now touch the theme, create a `seed` article that synthesizes across them and treat that new page as the anchor for this ingest pass.
+   - If fewer than 3 sources share the theme, note the gap in the log entry rather than creating a stub article.
+9. **Verify wiring.** Run `compile obsidian neighbors "Source Title"`. The source note should be connected to at least one article or map page via outbound links or inbound backlinks from an article/map. If it isn't and a plausible target exists, return to step 8. If no target exists, explain why in the log entry.
+10. **Companion artifact.** Consider a richer format using the triggers below. Offer the artifact when it would add durable value. Create it only when the user asks for it or explicitly agrees.
+11. Run `compile obsidian refresh` and then `compile health`.
+12. **Cross-source synthesis check.** Before ending the session, if you ingested more than one source, pause and ask: does the set make a claim, pattern, or tension visible that no single source makes visible? If yes, capture it inside the same local boundary when possible. If the right change would span a broader cluster, defer that work to `/synthesize`. If two sources materially disagree — on facts, norms, or framing — surface the disagreement in the relevant anchor article with a `> [!warning] Disagreement` callout naming both sources and the specific point of contention. Do not resolve disagreements by picking a winner.
 
 ### PDF sources
 
@@ -158,3 +182,31 @@ Optional when relevant: `tags`, `aliases`, `sources`, `source_ids`, `cssclasses`
 7. Keep navigation current.
 8. Verify quote-sensitive material against the raw source.
 9. Keep map pages lightweight and navigational; use whatever structure helps readers browse the topic.
+10. Surface disagreement. When two sources materially disagree — on factual claims, normative positions, or theoretical frameworks — update the relevant article with a `> [!warning] Disagreement` callout naming both sources and the specific disagreement. Do not resolve the disagreement by picking a winner. Present both positions with their evidence or reasoning.
+11. During `/ingest`, keep edits local: the source note plus 1–3 theme anchors. Use `/lint` or `/synthesize` for broader changes.
+
+## Status Discipline
+
+Status is prompt-judged by you during ingest and lint, not machine-enforced. The health check flags the most egregious violations as a backstop, but you are responsible for honest assessment.
+
+- `seed`: 0–1 sources, or a single line of evidence. Default for new articles.
+- `emerging`: 2+ sources with partial synthesis. The page names its sources and attempts cross-source claims.
+- `stable`: 3+ sources with genuine synthesis. The page names where sources agree, where they diverge, and what remains uncertain.
+
+Source note status is always `stable` unless the note is a registration shell, has `review_status: needs_document_review`, or is too thin to support meaningful claims (e.g., an empty Notion stub). Thin source notes should be `seed` with a `> [!note]` callout explaining the gap.
+
+Do not mark an article `stable` unless it meets the definition. When in doubt, use `seed`. When you update an article and it now meets a higher bar, upgrade it.
+
+When you need to change a page's status, use the low-level page writer with `--status seed|emerging|stable`. Rewriting the body alone preserves the existing status — do not rely on body edits to promote or demote a page.
+
+## What Good Synthesis Looks Like
+
+A good article:
+
+- Opens with a framing question or thesis.
+- Draws claims from multiple sources, citing each with `[[Source Title]]`.
+- Names tensions or disagreements between sources rather than smoothing them.
+- Identifies what remains uncertain or unresolved.
+- Links to related articles and maps.
+
+A bad article restates one source in different words and calls it synthesis. If your article could be written from a single source, it is a source note, not a synthesis page.

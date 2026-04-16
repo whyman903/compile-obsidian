@@ -13,7 +13,14 @@ import yaml
 
 from compile.dates import format_machine_datetime, now_frontmatter
 from compile.markdown import LINE_RE, WORD_RE, extract_wikilinks, parse_markdown_file
-from compile.page_types import ARTICLE_PAGE_TYPES, CONTENT_PAGE_TYPES, MAP_PAGE_TYPES, NAV_PAGE_TYPES
+from compile.page_types import (
+    ARTICLE_PAGE_TYPES,
+    CONTENT_PAGE_TYPES,
+    DEFAULT_PAGE_TYPES,
+    MAP_PAGE_TYPES,
+    MATURITY_STATES,
+    NAV_PAGE_TYPES,
+)
 
 
 IGNORED_DIRS = {
@@ -41,6 +48,13 @@ LEGACY_STALE_INDEX_MARKERS = (
     "_Articles will appear as the wiki grows._",
     "_Maps of content will appear as the wiki grows._",
 )
+READINESS_ISSUE_CODES = frozenset({
+    "missing_obsidian_config",
+    "no_wikilinks",
+    "unresolved_links",
+    "raw_files_without_source_notes",
+    "source_pages_without_raw_links",
+})
 
 
 def _normalize_key(value: str) -> str:
@@ -130,10 +144,6 @@ def _inferred_page_type(relative_path: str) -> str:
         if normalized.startswith(prefix):
             return page_type
     return "unknown"
-
-
-def _parse_markdown(path: Path) -> tuple[dict[str, Any], str, bool]:
-    return parse_markdown_file(path)
 
 
 def discover_vault_root(start: Path) -> Path:
@@ -655,6 +665,34 @@ class ObsidianConnector:
         edges.sort(key=lambda edge: (edge.source.lower(), edge.target_kind, edge.target.lower()))
         return GraphReport(nodes=nodes, edges=edges)
 
+    def find_upsert_target(
+        self,
+        *,
+        title: str,
+        page_type: str,
+        relative_path: str | None = None,
+    ) -> VaultPage | None:
+        """Return the page that ``upsert_page`` would overwrite, or ``None`` if it
+        would create a new page. Raises ``ValueError`` for ambiguous titles,
+        matching the write-path semantics exactly."""
+        self.scan()
+        if relative_path:
+            try:
+                return self.get_page(relative_path)
+            except FileNotFoundError:
+                return None
+        lookup = self._page_by_locator.get(_normalize_key(title), [])
+        matching_type = [page for page in lookup if page.page_type == page_type]
+        if len(matching_type) == 1:
+            return matching_type[0]
+        if len(matching_type) > 1:
+            matches = ", ".join(page.relative_path for page in matching_type[:4])
+            raise ValueError(f"Ambiguous page title '{title}'. Matches: {matches}")
+        if len(lookup) > 1:
+            matches = ", ".join(page.relative_path for page in lookup[:4])
+            raise ValueError(f"Ambiguous page title '{title}'. Matches: {matches}")
+        return None
+
     def upsert_page(
         self,
         *,
@@ -669,25 +707,9 @@ class ObsidianConnector:
         extra_frontmatter: dict[str, Any] | None = None,
         ensure_title_heading: bool = True,
     ) -> VaultPage:
-        self.scan()
-
-        existing_page: VaultPage | None = None
-        if relative_path:
-            try:
-                existing_page = self.get_page(relative_path)
-            except FileNotFoundError:
-                existing_page = None
-        else:
-            lookup = self._page_by_locator.get(_normalize_key(title), [])
-            matching_type = [page for page in lookup if page.page_type == page_type]
-            if len(matching_type) == 1:
-                existing_page = matching_type[0]
-            elif len(matching_type) > 1:
-                matches = ", ".join(page.relative_path for page in matching_type[:4])
-                raise ValueError(f"Ambiguous page title '{title}'. Matches: {matches}")
-            elif len(lookup) > 1:
-                matches = ", ".join(page.relative_path for page in lookup[:4])
-                raise ValueError(f"Ambiguous page title '{title}'. Matches: {matches}")
+        existing_page = self.find_upsert_target(
+            title=title, page_type=page_type, relative_path=relative_path,
+        )
 
         target_path = self._resolve_target_path(
             title=title,
@@ -731,19 +753,34 @@ class ObsidianConnector:
             frontmatter["aliases"] = normalized_aliases
         elif "aliases" in frontmatter:
             frontmatter.pop("aliases")
-        cssclasses = [item.strip() for item in _coerce_list(frontmatter.get("cssclasses")) if item.strip()]
-        for item in (page_type, str(frontmatter["status"])):
-            if item not in cssclasses:
-                cssclasses.append(item)
-        if cssclasses:
-            frontmatter["cssclasses"] = cssclasses
-
         if extra_frontmatter:
             frontmatter.update(extra_frontmatter)
 
+        # Rebuild cssclasses from the final page_type and status so stale maturity
+        # or type labels from prior writes don't linger. Preserve any custom
+        # classes the user added that aren't known type/status values.
+        managed_labels = DEFAULT_PAGE_TYPES | ARTICLE_PAGE_TYPES | CONTENT_PAGE_TYPES | MAP_PAGE_TYPES | MATURITY_STATES
+        preserved_cssclasses = [
+            item.strip()
+            for item in _coerce_list(frontmatter.get("cssclasses"))
+            if item.strip() and item.strip() not in managed_labels
+        ]
+        cssclasses = preserved_cssclasses + [page_type, str(frontmatter["status"])]
+        if cssclasses:
+            frontmatter["cssclasses"] = cssclasses
+
         rendered_body = body.strip()
-        if ensure_title_heading and not rendered_body.startswith("# "):
-            rendered_body = f"# {title}\n\n{rendered_body}"
+        if ensure_title_heading:
+            if not rendered_body.startswith("# "):
+                rendered_body = f"# {title}\n\n{rendered_body}"
+            elif existing_page is not None and existing_page.title != title:
+                # Body was preserved from a prior write whose title is now stale.
+                # Rewrite only the leading H1 so the heading matches the new title
+                # without disturbing later content.
+                first_line, _, rest = rendered_body.partition("\n")
+                existing_heading = first_line[2:].strip()
+                if existing_heading == existing_page.title:
+                    rendered_body = f"# {title}\n{rest}" if rest else f"# {title}"
 
         frontmatter_text = yaml.safe_dump(frontmatter, sort_keys=False, allow_unicode=True).strip()
         target_path.parent.mkdir(parents=True, exist_ok=True)
@@ -951,7 +988,7 @@ class ObsidianConnector:
         return sorted(paths)
 
     def _parse_page(self, path: Path) -> VaultPage:
-        frontmatter, body, has_frontmatter = _parse_markdown(path)
+        frontmatter, body, has_frontmatter = parse_markdown_file(path)
         title = _extract_title(path, body, frontmatter)
         relative_path = str(path.relative_to(self.root)).replace("\\", "/")
         page_type = str(
@@ -1089,13 +1126,36 @@ class ObsidianConnector:
                 return stripped[:180]
         return page.summary_text or page.body[:180].strip()
 
+    def supporting_source_titles(self, page: VaultPage) -> set[str]:
+        """All source-typed page titles that support ``page``, across every
+        provenance channel the connector knows about: outbound body wikilinks,
+        inbound backlinks from source notes, and the ``source_ids`` /
+        ``sources`` / ``citations`` frontmatter fields. Used by editorial
+        heuristics that need a reliable support count."""
+        self.scan()
+        source_title_set = {p.title for p in self._pages or [] if p.page_type == "source"}
+        supporting: set[str] = set()
+        for linked_title in page.resolved_outbound_links:
+            if linked_title in source_title_set:
+                supporting.add(linked_title)
+        for inbound_title in page.inbound_links:
+            if inbound_title in source_title_set:
+                supporting.add(inbound_title)
+        supporting.update(self._resolve_supporting_source_pages(page))
+        supporting.update(self._resolve_cited_source_pages(page))
+        supporting.discard(page.title)
+        return supporting
+
     def _resolve_supporting_source_pages(self, page: VaultPage) -> list[str]:
         titles: set[str] = set()
         for source_id in _coerce_list(page.frontmatter.get("source_ids")):
             for source_page in self._source_pages_by_source_id.get(source_id, []):
                 titles.add(source_page.title)
-        for source_title in _coerce_list(page.frontmatter.get("sources")):
-            matches = self._page_by_locator.get(_normalize_key(source_title), [])
+        for source_ref in _coerce_list(page.frontmatter.get("sources")):
+            normalized_raw_path = _normalize_raw_source_path(source_ref)
+            for source_page in self._source_pages_by_raw_path.get(normalized_raw_path, []):
+                titles.add(source_page.title)
+            matches = self._page_by_locator.get(_normalize_key(source_ref), [])
             for match in matches:
                 if match.page_type == "source":
                     titles.add(match.title)

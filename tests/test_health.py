@@ -81,6 +81,68 @@ class TestBuildHealthReport:
             assert "status" in report[section]
             assert "counts" in report[section]
 
+        assert "knowledge_page_count" in report["metrics"]
+        assert "source_to_knowledge_page_ratio" in report["metrics"]
+
+    def test_editorial_metrics(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        _write_page(
+            tmp_path / "wiki" / "articles" / "topic.md",
+            "Topic",
+            "article",
+            "Article body linking to [[Source A]] and [[Source B]].",
+            status="emerging",
+            summary='"An article."',
+        )
+        for index in range(4):
+            _write_page(
+                tmp_path / "wiki" / "sources" / f"source-{index}.md",
+                f"Source {index}",
+                "source",
+                "Source body linking to [[Topic]].",
+                status="stable",
+                summary='"A source note."',
+            )
+        _refresh_nav(tmp_path)
+
+        report = build_health_report(tmp_path)
+
+        assert report["metrics"]["knowledge_page_count"] == 1
+        assert report["metrics"]["source_to_knowledge_page_ratio"] == 4.0
+
+    def test_editorial_metrics_counts_all_synthesis_page_types(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        _write_page(
+            tmp_path / "wiki" / "articles" / "topic.md",
+            "Topic", "article", "Article body.", status="seed", summary='"Article."',
+        )
+        _write_page(
+            tmp_path / "wiki" / "articles" / "thing.md",
+            "Thing", "concept", "Concept body.", status="seed", summary='"Concept."',
+        )
+        _refresh_nav(tmp_path)
+
+        report = build_health_report(tmp_path)
+
+        assert report["metrics"]["knowledge_page_count"] == 2
+
+    def test_editorial_metrics_with_zero_knowledge_pages(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        _write_page(
+            tmp_path / "wiki" / "sources" / "source.md",
+            "Source",
+            "source",
+            "Lone source.",
+            status="seed",
+            summary='"Lone source."',
+        )
+        _refresh_nav(tmp_path)
+
+        report = build_health_report(tmp_path)
+
+        assert report["metrics"]["knowledge_page_count"] == 0
+        assert report["metrics"]["source_to_knowledge_page_ratio"] == 1.0
+
     def test_content_issues_passed_through(self, tmp_path: Path) -> None:
         init_workspace(tmp_path, "Test")
         custom_issues = [

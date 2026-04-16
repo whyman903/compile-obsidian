@@ -153,16 +153,118 @@ class TestAuditVaultContent:
     def test_flags_premature_stability(self, tmp_path: Path) -> None:
         config = init_workspace(tmp_path, "Test")
         _write_page(
+            tmp_path / "wiki" / "sources" / "only-source.md",
+            "Only Source", "source",
+            "Source body.\n\nAnother paragraph.",
+        )
+        _write_page(
             tmp_path / "wiki" / "articles" / "premature.md",
             "Premature", "article",
-            "Content here.\n\nAnother paragraph.",
+            "Content here citing [[Only Source]].\n\nAnother paragraph.",
             status="stable",
-            source_count="1",
         )
         _refresh(tmp_path)
 
         issues = audit_vault_content(tmp_path)
         assert any(i["type"] == "premature_stability" for i in issues)
+
+    def test_stable_article_with_multiple_source_links_does_not_flag(self, tmp_path: Path) -> None:
+        config = init_workspace(tmp_path, "Test")
+        for name in ("Alpha", "Beta", "Gamma"):
+            _write_page(
+                tmp_path / "wiki" / "sources" / f"{name.lower()}.md",
+                name, "source",
+                f"{name} source body.\n\nAnother paragraph.",
+            )
+        _write_page(
+            tmp_path / "wiki" / "articles" / "mature.md",
+            "Mature", "article",
+            "Synthesis across [[Alpha]], [[Beta]], and [[Gamma]].\n\nAnother paragraph.",
+            status="stable",
+        )
+        _refresh(tmp_path)
+
+        issues = audit_vault_content(tmp_path)
+        assert not any(
+            i["type"] == "premature_stability" and "Mature" in i["title"]
+            for i in issues
+        )
+
+    def test_stable_article_supported_by_inbound_source_backlinks(self, tmp_path: Path) -> None:
+        """An article with 3 source notes linking TO it (and none cited in the body)
+        is still well-supported and must not be flagged premature_stability."""
+        init_workspace(tmp_path, "Test")
+        for name in ("Alpha", "Beta", "Gamma"):
+            _write_page(
+                tmp_path / "wiki" / "sources" / f"{name.lower()}.md",
+                name, "source",
+                f"{name} source body. See [[Hub]] for synthesis.\n\nAnother paragraph.",
+            )
+        _write_page(
+            tmp_path / "wiki" / "articles" / "hub.md",
+            "Hub", "article",
+            "Synthesis prose with no wikilinks.\n\nSecond paragraph of real content.",
+            status="stable",
+        )
+        _refresh(tmp_path)
+
+        issues = audit_vault_content(tmp_path)
+        assert not any(
+            i["type"] == "premature_stability" and "Hub" in i["title"]
+            for i in issues
+        )
+
+    def test_stable_article_supported_by_source_ids_frontmatter(self, tmp_path: Path) -> None:
+        """An article whose provenance lives in ``source_ids`` frontmatter
+        (rather than body wikilinks) is still well-supported."""
+        init_workspace(tmp_path, "Test")
+        tmp_path.joinpath("wiki", "sources").mkdir(parents=True, exist_ok=True)
+        for name, source_id in (("Alpha", "sid-1"), ("Beta", "sid-2"), ("Gamma", "sid-3")):
+            (tmp_path / "wiki" / "sources" / f"{name.lower()}.md").write_text(
+                f"---\ntitle: {name}\ntype: source\nstatus: stable\n"
+                f"source_ids:\n  - {source_id}\n---\n\n# {name}\n\n{name} body.\n\nPara two.\n"
+            )
+        (tmp_path / "wiki" / "articles").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "wiki" / "articles" / "structured.md").write_text(
+            "---\ntitle: Structured\ntype: article\nstatus: stable\n"
+            "source_ids:\n  - sid-1\n  - sid-2\n  - sid-3\n---\n\n"
+            "# Structured\n\nSynthesis referencing all three via frontmatter.\n\nPara two.\n"
+        )
+        _refresh(tmp_path)
+
+        issues = audit_vault_content(tmp_path)
+        assert not any(
+            i["type"] == "premature_stability" and "Structured" in i["title"]
+            for i in issues
+        )
+
+    def test_stable_article_supported_by_raw_source_paths_frontmatter(self, tmp_path: Path) -> None:
+        """Articles written with ``sources: [raw/...]`` should still resolve to
+        their corresponding source notes for editorial support counting."""
+        init_workspace(tmp_path, "Test")
+        tmp_path.joinpath("raw").mkdir(parents=True, exist_ok=True)
+        tmp_path.joinpath("raw", "paper-a.pdf").write_text("stub")
+        tmp_path.joinpath("raw", "paper-b.pdf").write_text("stub")
+        tmp_path.joinpath("raw", "paper-c.pdf").write_text("stub")
+        tmp_path.joinpath("wiki", "sources").mkdir(parents=True, exist_ok=True)
+        for slug, title in (("paper-a", "Paper A"), ("paper-b", "Paper B"), ("paper-c", "Paper C")):
+            (tmp_path / "wiki" / "sources" / f"{slug}.md").write_text(
+                f"---\ntitle: {title}\ntype: source\nstatus: stable\n"
+                f"sources:\n  - raw/{slug}.pdf\n---\n\n# {title}\n\n{title} body.\n\nPara two.\n"
+            )
+        tmp_path.joinpath("wiki", "articles").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "wiki" / "articles" / "raw-backed.md").write_text(
+            "---\ntitle: Raw Backed\ntype: article\nstatus: stable\n"
+            "sources:\n  - raw/paper-a.pdf\n  - raw/paper-b.pdf\n  - raw/paper-c.pdf\n---\n\n"
+            "# Raw Backed\n\nSynthesis carried in raw-path provenance.\n\nPara two.\n"
+        )
+        _refresh(tmp_path)
+
+        issues = audit_vault_content(tmp_path)
+        assert not any(
+            i["type"] == "premature_stability" and "Raw Backed" in i["title"]
+            for i in issues
+        )
 
     def test_flags_source_without_topic_anchor(self, tmp_path: Path) -> None:
         init_workspace(tmp_path, "Test")
