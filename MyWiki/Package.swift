@@ -10,6 +10,9 @@ let package = Package(
         .library(name: "MyWikiCore", targets: ["MyWikiCore"]),
         .executable(name: "MyWiki", targets: ["MyWikiApp"]),
     ],
+    dependencies: [
+        .package(url: "https://github.com/gonzalezreal/swift-markdown-ui", exact: "2.4.1"),
+    ],
     targets: [
         .target(
             name: "MyWikiCore",
@@ -17,13 +20,22 @@ let package = Package(
         ),
         .executableTarget(
             name: "MyWikiApp",
-            dependencies: ["MyWikiCore"],
-            path: "Sources/MyWikiApp"
+            dependencies: [
+                "MyWikiCore",
+                .product(name: "MarkdownUI", package: "swift-markdown-ui"),
+            ],
+            path: "Sources/MyWikiApp",
+            resources: [.copy("Resources/AppIcon.icns")]
         ),
         .testTarget(
             name: "MyWikiCoreTests",
             dependencies: ["MyWikiCore"],
             path: "Tests/MyWikiCoreTests"
+        ),
+        .testTarget(
+            name: "MyWikiAppTests",
+            dependencies: ["MyWikiApp"],
+            path: "Tests/MyWikiAppTests"
         ),
     ]
 )

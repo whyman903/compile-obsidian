@@ -26,6 +26,7 @@ APP_EXECUTABLE="$APP_BIN_DIR/MyWiki"
 mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources"
 cp "$APP_EXECUTABLE" "$APP_BUNDLE/Contents/MacOS/MyWiki"
 cp "$APP_ROOT/support/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
+cp "$APP_ROOT/support/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
 cp "$SIDECAR_DIST/compile-bin" "$APP_BUNDLE/Contents/Resources/compile-bin"
 cp -R "$ROOT/compile/templates" "$APP_BUNDLE/Contents/Resources/templates"
 

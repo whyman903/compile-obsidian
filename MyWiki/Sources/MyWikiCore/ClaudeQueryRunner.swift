@@ -37,12 +37,12 @@ public final class ClaudeQueryRunner: ClaudeQueryRunning, @unchecked Sendable {
 
     public static let wikiSystemPromptAddendum = """
         You answer questions about the user's personal Obsidian wiki. Relevant wiki page \
-        content is provided in <wiki-context> tags before the question. Synthesize your \
-        answer from this context. If the context does not contain enough information to \
-        answer, say so briefly.
+        content is provided in <wiki-context> tags before the question. Prior conversation \
+        turns may appear in <conversation-history> tags. Synthesize your answer from this \
+        context. If the context does not contain enough information to answer, say so briefly.
 
         Cite specific pages inline with Obsidian [[Page Title]] wikilinks. \
-        Answer in 2-6 sentences. Do not offer to save the answer. Do not ask follow-up questions.
+        Do not offer to save the answer.
         """
 
     public func runQuery(

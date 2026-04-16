@@ -3,23 +3,111 @@ import SwiftUI
 import UniformTypeIdentifiers
 import MyWikiCore
 
-private enum EditorialPalette {
-    static let background    = Color(red: 0.0902, green: 0.0706, blue: 0.0549)
-    static let backgroundTop = Color(red: 0.1098, green: 0.0902, blue: 0.0667)
-    static let surface       = Color(red: 0.1216, green: 0.1020, blue: 0.0784)
-    static let surfaceHover  = Color(red: 0.1490, green: 0.1255, blue: 0.0980)
-    static let border        = Color(red: 0.1765, green: 0.1490, blue: 0.1255)
-    static let borderHover   = Color(red: 0.2275, green: 0.1922, blue: 0.1608)
-    static let textPrimary   = Color(red: 0.9608, green: 0.9333, blue: 0.8745)
-    static let textSecondary = Color(red: 0.7647, green: 0.7216, blue: 0.6275)
-    static let textTertiary  = Color(red: 0.4980, green: 0.4471, blue: 0.3765)
-    static let accent        = Color(red: 0.8314, green: 0.6588, blue: 0.3529)
-    static let accentHover   = Color(red: 0.8941, green: 0.7255, blue: 0.4078)
-    static let warning       = Color(red: 0.8500, green: 0.5200, blue: 0.3200)
+nonisolated(unsafe) var activeTheme: AppTheme = {
+    AppTheme(rawValue: UserDefaults.standard.string(forKey: "appTheme") ?? "") ?? .umber
+}()
+
+nonisolated(unsafe) var activeFont: AppFont = {
+    AppFont(rawValue: UserDefaults.standard.string(forKey: "appFont") ?? "") ?? .serif
+}()
+
+extension AppFont {
+    var design: Font.Design {
+        switch self {
+        case .serif: return .serif
+        case .sans: return .default
+        case .mono: return .monospaced
+        }
+    }
+}
+
+struct ThemeColorSet {
+    let background: Color
+    let backgroundTop: Color
+    let surface: Color
+    let surfaceHover: Color
+    let border: Color
+    let borderHover: Color
+    let textPrimary: Color
+    let textSecondary: Color
+    let textTertiary: Color
+    let accent: Color
+    let accentHover: Color
+    let warning: Color
+
+    static let ivory = ThemeColorSet(
+        background:    Color(red: 0.980, green: 0.978, blue: 0.968),
+        backgroundTop: Color(red: 0.950, green: 0.942, blue: 0.922),
+        surface:       Color(red: 0.930, green: 0.918, blue: 0.894),
+        surfaceHover:  Color(red: 0.900, green: 0.886, blue: 0.858),
+        border:        Color(red: 0.840, green: 0.824, blue: 0.792),
+        borderHover:   Color(red: 0.770, green: 0.750, blue: 0.714),
+        textPrimary:   Color(red: 0.100, green: 0.094, blue: 0.082),
+        textSecondary: Color(red: 0.360, green: 0.337, blue: 0.314),
+        textTertiary:  Color(red: 0.608, green: 0.580, blue: 0.564),
+        accent:        Color(red: 0.720, green: 0.475, blue: 0.180),
+        accentHover:   Color(red: 0.830, green: 0.537, blue: 0.227),
+        warning:       Color(red: 0.770, green: 0.302, blue: 0.227)
+    )
+
+    static let obsidian = ThemeColorSet(
+        background:    Color(red: 0.040, green: 0.040, blue: 0.040),
+        backgroundTop: Color(red: 0.070, green: 0.070, blue: 0.070),
+        surface:       Color(red: 0.100, green: 0.100, blue: 0.100),
+        surfaceHover:  Color(red: 0.140, green: 0.140, blue: 0.140),
+        border:        Color(red: 0.180, green: 0.180, blue: 0.180),
+        borderHover:   Color(red: 0.230, green: 0.230, blue: 0.230),
+        textPrimary:   Color(red: 0.910, green: 0.910, blue: 0.910),
+        textSecondary: Color(red: 0.540, green: 0.540, blue: 0.540),
+        textTertiary:  Color(red: 0.350, green: 0.350, blue: 0.350),
+        accent:        Color(red: 0.910, green: 0.910, blue: 0.910),
+        accentHover:   Color(red: 1.000, green: 1.000, blue: 1.000),
+        warning:       Color(red: 0.880, green: 0.314, blue: 0.251)
+    )
+
+    static let umber = ThemeColorSet(
+        background:    Color(red: 0.0902, green: 0.0706, blue: 0.0549),
+        backgroundTop: Color(red: 0.1098, green: 0.0902, blue: 0.0667),
+        surface:       Color(red: 0.1216, green: 0.1020, blue: 0.0784),
+        surfaceHover:  Color(red: 0.1490, green: 0.1255, blue: 0.0980),
+        border:        Color(red: 0.1765, green: 0.1490, blue: 0.1255),
+        borderHover:   Color(red: 0.2275, green: 0.1922, blue: 0.1608),
+        textPrimary:   Color(red: 0.9608, green: 0.9333, blue: 0.8745),
+        textSecondary: Color(red: 0.7647, green: 0.7216, blue: 0.6275),
+        textTertiary:  Color(red: 0.4980, green: 0.4471, blue: 0.3765),
+        accent:        Color(red: 0.8314, green: 0.6588, blue: 0.3529),
+        accentHover:   Color(red: 0.8941, green: 0.7255, blue: 0.4078),
+        warning:       Color(red: 0.8500, green: 0.5200, blue: 0.3200)
+    )
+
+    static func forTheme(_ theme: AppTheme) -> ThemeColorSet {
+        switch theme {
+        case .ivory: return .ivory
+        case .obsidian: return .obsidian
+        case .umber: return .umber
+        }
+    }
+}
+
+enum EditorialPalette {
+    private static var colors: ThemeColorSet { .forTheme(activeTheme) }
+    static var background: Color    { colors.background }
+    static var backgroundTop: Color { colors.backgroundTop }
+    static var surface: Color       { colors.surface }
+    static var surfaceHover: Color  { colors.surfaceHover }
+    static var border: Color        { colors.border }
+    static var borderHover: Color   { colors.borderHover }
+    static var textPrimary: Color   { colors.textPrimary }
+    static var textSecondary: Color { colors.textSecondary }
+    static var textTertiary: Color  { colors.textTertiary }
+    static var accent: Color        { colors.accent }
+    static var accentHover: Color   { colors.accentHover }
+    static var warning: Color       { colors.warning }
 }
 
 struct LauncherView: View {
     @Bindable var model: AppModel
+    @Environment(\.openWindow) private var openWindow
     @State private var draftText: String = ""
     @State private var stagedFiles: [URL] = []
     @State private var isDropTargeted = false
@@ -57,11 +145,24 @@ struct LauncherView: View {
         }
         .frame(width: 460)
         .background(backgroundLayer)
-        .preferredColorScheme(.dark)
+        .id("\(model.theme.rawValue).\(model.font.rawValue)")
+        .preferredColorScheme(model.theme.prefersDarkMode ? .dark : .light)
         .onAppear {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
                 isDraftFocused = true
             }
+        }
+        .alert("Install Advanced URI?", isPresented: $model.showGraphPluginInstallPrompt) {
+            Button("Install") {
+                Task {
+                    await model.installGraphPluginForCurrentWorkspace()
+                }
+            }
+            Button("Not Now", role: .cancel) {
+                model.dismissGraphPluginInstallPrompt()
+            }
+        } message: {
+            Text("Graph view now uses the Advanced URI plugin for this vault. MyWiki will add the plugin files to .obsidian/plugins and enable them without requesting Accessibility access.")
         }
     }
 
@@ -81,7 +182,7 @@ struct LauncherView: View {
         HStack(alignment: .top, spacing: 12) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(model.workspace?.topic ?? "MyWiki")
-                    .font(.system(size: 22, weight: .medium, design: .serif))
+                    .font(.system(size: 22, weight: .medium, design: activeFont.design))
                     .foregroundStyle(EditorialPalette.textPrimary)
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -195,7 +296,7 @@ struct LauncherView: View {
             ZStack(alignment: .topLeading) {
                 if draftText.isEmpty {
                     Text(placeholderText)
-                        .font(.system(size: 15, design: .serif).italic())
+                        .font(.system(size: 15, design: activeFont.design).italic())
                         .foregroundStyle(EditorialPalette.textTertiary)
                         .padding(.horizontal, 16)
                         .padding(.top, 14)
@@ -290,6 +391,7 @@ struct LauncherView: View {
         if willRouteInApp {
             model.sendQuery(trimmed)
             draftText = ""
+            showQueryWindow()
             return
         }
         let errorBefore = model.lastError
@@ -346,6 +448,11 @@ struct LauncherView: View {
         }
     }
 
+    private func showQueryWindow() {
+        openWindow(id: "query-window")
+        NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+
     // MARK: - Recent section
 
     private var recentSection: some View {
@@ -366,7 +473,7 @@ struct LauncherView: View {
             let recent = Array(model.feedStore.items.suffix(4).reversed())
             if recent.isEmpty {
                 Text("Nothing dispatched yet.")
-                    .font(.system(size: 13, design: .serif).italic())
+                    .font(.system(size: 13, design: activeFont.design).italic())
                     .foregroundStyle(EditorialPalette.textTertiary)
                     .padding(.vertical, 6)
             } else {
@@ -423,7 +530,7 @@ private struct FileChip: View {
     }
 }
 
-private struct EditorialLaunchTile<Icon: View>: View {
+struct EditorialLaunchTile<Icon: View>: View {
     let title: String
     let caption: String
     let action: () -> Void
@@ -453,7 +560,7 @@ private struct EditorialLaunchTile<Icon: View>: View {
                     .frame(width: 18, height: 18)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(title)
-                        .font(.system(size: 14, weight: .semibold, design: .serif))
+                        .font(.system(size: 14, weight: .semibold, design: activeFont.design))
                         .foregroundStyle(EditorialPalette.textPrimary)
                     Text(caption)
                         .font(.system(size: 10))
@@ -506,7 +613,7 @@ private struct EditorialSpinner: View {
     }
 }
 
-private struct ObsidianMark: View {
+struct ObsidianMark: View {
     var color: Color = EditorialPalette.textSecondary
     var size: CGFloat = 15
     var lineWidth: CGFloat = 1.3
@@ -553,7 +660,7 @@ private struct RecentRow: View {
             HStack(alignment: .top, spacing: 10) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(primaryLine)
-                        .font(.system(size: 13, design: .serif))
+                        .font(.system(size: 13, design: activeFont.design))
                         .foregroundStyle(EditorialPalette.textPrimary)
                         .lineLimit(1)
                         .truncationMode(.tail)
@@ -641,7 +748,7 @@ private struct QueryResponseView: View {
                 .frame(width: 12, height: 12, alignment: .center)
                 .padding(.top, 2)
             Text(session.question)
-                .font(.system(size: 13, weight: .semibold, design: .serif))
+                .font(.system(size: 13, weight: .semibold, design: activeFont.design))
                 .foregroundStyle(EditorialPalette.textPrimary)
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
@@ -673,7 +780,7 @@ private struct QueryResponseView: View {
                 HStack(spacing: 8) {
                     EditorialSpinner(size: 14)
                     Text(session.statusDetail.isEmpty ? "Starting…" : session.statusDetail)
-                        .font(.system(size: 13, design: .serif).italic())
+                        .font(.system(size: 13, design: activeFont.design).italic())
                         .foregroundStyle(EditorialPalette.textTertiary)
                         .animation(.easeInOut(duration: 0.2), value: session.statusDetail)
                 }
@@ -686,12 +793,12 @@ private struct QueryResponseView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else if session.status == .cancelled {
                 Text("Query cancelled.")
-                    .font(.system(size: 13, design: .serif).italic())
+                    .font(.system(size: 13, design: activeFont.design).italic())
                     .foregroundStyle(EditorialPalette.textTertiary)
             } else if !session.assistantText.isEmpty {
                 ScrollView {
                     Text(WikilinkParser.attributedString(session.assistantText))
-                        .font(.system(size: 14, design: .serif))
+                        .font(.system(size: 14, design: activeFont.design))
                         .foregroundStyle(EditorialPalette.textPrimary)
                         .textSelection(.enabled)
                         .fixedSize(horizontal: false, vertical: true)
@@ -702,7 +809,7 @@ private struct QueryResponseView: View {
                 .fixedSize(horizontal: false, vertical: true)
             } else {
                 Text("Waiting for response...")
-                    .font(.system(size: 13, design: .serif).italic())
+                    .font(.system(size: 13, design: activeFont.design).italic())
                     .foregroundStyle(EditorialPalette.textTertiary)
             }
         }

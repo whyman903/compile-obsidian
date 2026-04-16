@@ -14,6 +14,12 @@ struct MyWikiApp: App {
     }
 
     var body: some Scene {
+        Window("MyWiki", id: "query-window") {
+            QueryDetailView(model: model)
+                .task { await model.bootstrapIfNeeded() }
+        }
+        .defaultSize(width: 560, height: 580)
+
         MenuBarExtra {
             LauncherView(model: model)
                 .task { await model.bootstrapIfNeeded() }

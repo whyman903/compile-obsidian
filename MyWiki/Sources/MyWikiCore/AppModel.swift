@@ -2,16 +2,66 @@ import AppKit
 import Foundation
 import Observation
 
+public enum AppTheme: String, CaseIterable, Codable, Sendable {
+    case ivory
+    case obsidian
+    case umber
+
+    public var displayName: String {
+        switch self {
+        case .ivory: return "Ivory"
+        case .obsidian: return "Obsidian"
+        case .umber: return "Umber"
+        }
+    }
+
+    public var prefersDarkMode: Bool {
+        switch self {
+        case .ivory: return false
+        case .obsidian, .umber: return true
+        }
+    }
+}
+
+public enum AppFont: String, CaseIterable, Codable, Sendable {
+    case serif
+    case sans
+    case mono
+
+    public var displayName: String {
+        switch self {
+        case .serif: return "Serif"
+        case .sans: return "Sans"
+        case .mono: return "Mono"
+        }
+    }
+}
+
 @MainActor
 @Observable
 public final class AppModel {
     public private(set) var workspace: WorkspaceInfo?
     public private(set) var recentWorkspacePaths: [String] = []
     public let feedStore: FeedStore
-    public let querySession = QuerySession()
+    public private(set) var querySession = QuerySession()
+    public private(set) var queryHistory: [QueryHistoryRecord] = []
+    public var hasActiveQuerySession: Bool {
+        querySession.status != .idle || !querySession.turns.isEmpty
+    }
+    public var sidebarQueryHistory: [QueryHistoryRecord] {
+        queryHistory.filter { $0.id != querySession.id }
+    }
     public var lastError: String?
     public var statusMessage = "Preparing workspace..."
     public var launcherToast: String?
+    public var showGraphPluginInstallPrompt = false
+    public private(set) var isInstallingGraphPlugin = false
+    public var theme: AppTheme {
+        didSet { defaults.set(theme.rawValue, forKey: themeKey) }
+    }
+    public var font: AppFont {
+        didSet { defaults.set(font.rawValue, forKey: fontKey) }
+    }
 
     private let runner: CompileRunning
     private let dispatcher: IngestDispatcher
@@ -22,9 +72,16 @@ public final class AppModel {
     private let openWorkspaceHandler: @MainActor (URL) -> ObsidianOpener.Result
     private let openNoteHandler: @MainActor (String, URL) -> ObsidianOpener.Result
     private let openGraphHandler: @MainActor (URL) -> ObsidianOpener.Result
+    private let isGraphPluginInstalledHandler: @MainActor (URL) -> Bool
+    private let installGraphPluginHandler: @MainActor (URL) async throws -> Void
+    private let isObsidianRunningHandler: @MainActor () -> Bool
     private let defaultWorkspaceName = "Commonplace"
     private let recentKey = "recentWorkspacePaths"
     private let currentWorkspaceKey = "currentWorkspacePath"
+    private let themeKey = "appTheme"
+    private let fontKey = "appFont"
+    private let graphPluginPromptSuppressedKeyPrefix = "graphPluginPromptSuppressed."
+    private let maxQueryHistoryRecords = 50
     private var didBootstrap = false
     private var toastClearTask: Task<Void, Never>?
     private var activeQueryTask: Task<Void, Never>?
@@ -38,7 +95,14 @@ public final class AppModel {
         fileManager: FileManager = .default,
         openWorkspaceHandler: @escaping @MainActor (URL) -> ObsidianOpener.Result = ObsidianOpener.openWorkspace,
         openNoteHandler: @escaping @MainActor (String, URL) -> ObsidianOpener.Result = ObsidianOpener.openNote,
-        openGraphHandler: @escaping @MainActor (URL) -> ObsidianOpener.Result = ObsidianOpener.openGraph
+        openGraphHandler: @escaping @MainActor (URL) -> ObsidianOpener.Result = ObsidianOpener.openGraph,
+        isGraphPluginInstalledHandler: @escaping @MainActor (URL) -> Bool = {
+            ObsidianAdvancedURIInstaller.isInstalledAndEnabled(in: $0)
+        },
+        installGraphPluginHandler: @escaping @MainActor (URL) async throws -> Void = {
+            try await ObsidianAdvancedURIInstaller.installAndEnable(in: $0)
+        },
+        isObsidianRunningHandler: @escaping @MainActor () -> Bool = ObsidianOpener.isObsidianRunning
     ) {
         self.logger = logger
         let resolvedRunner = runner ?? CompileRunner(logger: logger)
@@ -52,7 +116,17 @@ public final class AppModel {
         self.openWorkspaceHandler = openWorkspaceHandler
         self.openNoteHandler = openNoteHandler
         self.openGraphHandler = openGraphHandler
+        self.isGraphPluginInstalledHandler = isGraphPluginInstalledHandler
+        self.installGraphPluginHandler = installGraphPluginHandler
+        self.isObsidianRunningHandler = isObsidianRunningHandler
         self.recentWorkspacePaths = defaults.stringArray(forKey: recentKey) ?? []
+        self.theme = AppTheme(rawValue: defaults.string(forKey: "appTheme") ?? "") ?? .umber
+        self.font = AppFont(rawValue: defaults.string(forKey: "appFont") ?? "") ?? .serif
+    }
+
+    public var isGraphPluginInstalled: Bool {
+        guard let workspace else { return false }
+        return isGraphPluginInstalledHandler(workspace.url)
     }
 
     public func bootstrapIfNeeded() async {
@@ -111,6 +185,8 @@ public final class AppModel {
         guard !trimmed.isEmpty else { return }
 
         activeQueryTask?.cancel()
+        archiveSessionIfNeeded()
+        querySession = QuerySession()
         querySession.start(question: trimmed)
         let feedItemID = feedStore.recordLocalQuery(trimmed)
 
@@ -172,11 +248,12 @@ public final class AppModel {
                         }
                     }
                 )
-                await MainActor.run {
+                await MainActor.run { [weak self] in
                     log.log("sendQuery: runQuery returned — status=\(session.status), text=\(session.assistantText.count) chars")
                     if session.status == .running {
                         session.fail("Query completed without a response")
                     }
+                    self?.saveCurrentSession()
                 }
             } catch is CancellationError {
                 await MainActor.run { session.cancel() }
@@ -201,7 +278,168 @@ public final class AppModel {
     }
 
     public func dismissQueryResponse() {
-        querySession.clear()
+        activeQueryTask?.cancel()
+        activeQueryTask = nil
+        querySession = QuerySession()
+    }
+
+    /// Send a follow-up question in the current conversation. Re-searches the wiki
+    /// with the new question and includes prior turns as conversation history.
+    public func sendFollowUp(_ question: String) {
+        guard let workspace else {
+            lastError = "Workspace is not ready yet."
+            return
+        }
+        let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        activeQueryTask?.cancel()
+        querySession.startFollowUp(question: trimmed)
+
+        let workspaceURL = workspace.url
+        let session = querySession
+        let claudeRunner = queryRunner
+        let compileRunner = runner
+        let log = logger
+
+        let history = session.turns.map { "Q: \($0.question)\nA: \($0.answer)" }
+            .joined(separator: "\n\n")
+
+        activeQueryTask = Task { [weak self] in
+            log.log("sendFollowUp: follow-up — \"\(trimmed.prefix(60))\"")
+
+            var wikiContext = ""
+            do {
+                await MainActor.run { session.updateStatusDetail("Searching wiki…") }
+                let hits = try await compileRunner.search(query: trimmed, at: workspaceURL, limit: 10)
+                if !hits.isEmpty {
+                    await MainActor.run { session.updateStatusDetail("Reading pages…") }
+                    var pages: [WikiPage] = []
+                    for hit in hits {
+                        if let page = try? await compileRunner.page(locator: hit.relativePath, at: workspaceURL) {
+                            pages.append(page)
+                        }
+                    }
+                    wikiContext = Self.assembleWikiContext(pages)
+                }
+            } catch is CancellationError {
+                await MainActor.run { session.cancel() }
+                await MainActor.run { [weak self] in self?.activeQueryTask = nil }
+                return
+            } catch {
+                log.log("Wiki search failed for follow-up, proceeding without context: \(error)")
+            }
+
+            await MainActor.run { session.updateStatusDetail("Asking Claude…") }
+            var prompt = ""
+            if !history.isEmpty {
+                prompt += "<conversation-history>\n\(history)\n</conversation-history>\n\n"
+            }
+            if !wikiContext.isEmpty {
+                prompt += "\(wikiContext)\n\n"
+            }
+            prompt += trimmed
+
+            do {
+                try await claudeRunner.runQuery(
+                    prompt: prompt,
+                    workspaceURL: workspaceURL,
+                    onEvent: { event in
+                        await MainActor.run { session.handle(event) }
+                    }
+                )
+                await MainActor.run { [weak self] in
+                    if session.status == .running {
+                        session.fail("Query completed without a response")
+                    }
+                    self?.saveCurrentSession()
+                }
+            } catch is CancellationError {
+                await MainActor.run { session.cancel() }
+            } catch {
+                await MainActor.run {
+                    session.fail(error.localizedDescription)
+                }
+            }
+            await MainActor.run { [weak self] in
+                self?.activeQueryTask = nil
+            }
+        }
+    }
+
+    public func selectHistorySession(_ record: QueryHistoryRecord) {
+        activeQueryTask?.cancel()
+        activeQueryTask = nil
+        archiveSessionIfNeeded()
+        let session = QuerySession(id: record.id)
+        session.restore(turns: record.turns)
+        querySession = session
+    }
+
+    public func startNewQuery() {
+        activeQueryTask?.cancel()
+        activeQueryTask = nil
+        archiveSessionIfNeeded()
+        querySession = QuerySession()
+    }
+
+    /// Persist the current session into history immediately (called after each completed query).
+    private func saveCurrentSession() {
+        guard !querySession.turns.isEmpty else { return }
+        upsertHistoryRecord(QueryHistoryRecord(id: querySession.id, turns: querySession.turns))
+    }
+
+    private func archiveSessionIfNeeded() {
+        guard !querySession.turns.isEmpty else { return }
+        upsertHistoryRecord(QueryHistoryRecord(id: querySession.id, turns: querySession.turns))
+    }
+
+    private var historyFileURL: URL? {
+        workspace?.url.appending(path: ".compile/query-history.json", directoryHint: .notDirectory)
+    }
+
+    private func upsertHistoryRecord(_ record: QueryHistoryRecord) {
+        queryHistory.removeAll { $0.id == record.id }
+        queryHistory.insert(record, at: 0)
+        queryHistory = normalizedHistory(queryHistory)
+        saveHistory()
+    }
+
+    private func normalizedHistory(_ records: [QueryHistoryRecord]) -> [QueryHistoryRecord] {
+        var seenIDs: Set<UUID> = []
+        let deduped = records
+            .filter { !$0.turns.isEmpty }
+            .sorted { $0.archivedAt > $1.archivedAt }
+            .filter { seenIDs.insert($0.id).inserted }
+        return Array(deduped.prefix(maxQueryHistoryRecords))
+    }
+
+    private func saveHistory() {
+        guard let url = historyFileURL else { return }
+        do {
+            try fileManager.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            let normalized = normalizedHistory(queryHistory)
+            let data = try JSONEncoder().encode(normalized)
+            try data.write(to: url, options: .atomic)
+        } catch {
+            logger.log("Failed to save query history: \(error)")
+        }
+    }
+
+    func loadHistory() {
+        queryHistory = []
+        guard let url = historyFileURL,
+              fileManager.fileExists(atPath: url.path) else { return }
+        do {
+            let data = try Data(contentsOf: url)
+            let decoded = try JSONDecoder().decode([QueryHistoryRecord].self, from: data)
+            queryHistory = normalizedHistory(decoded)
+        } catch {
+            logger.log("Failed to load query history: \(error)")
+        }
     }
 
     /// Open a `[[wikilink]]` reference in Obsidian. Path-style targets open directly,
@@ -221,7 +459,8 @@ public final class AppModel {
                 .appending(path: relative, directoryHint: .notDirectory)
                 .standardizedFileURL
             if fileManager.fileExists(atPath: candidate.path) {
-                _ = openNoteHandler(relative, workspace.url)
+                let result = openNoteHandler(relative, workspace.url)
+                lastError = noteOpenErrorMessage(for: result, relativePath: relative)
                 return
             }
         }
@@ -233,11 +472,7 @@ public final class AppModel {
                 await MainActor.run {
                     guard let self else { return }
                     let result = self.openNoteHandler(page.relativePath, workspaceURL)
-                    if case .failed(let message) = result {
-                        self.lastError = "Obsidian refused to open: \(message)"
-                    } else if case .vaultMissing = result {
-                        self.lastError = "The wiki page could not be found at \(page.relativePath)."
-                    }
+                    self.lastError = self.noteOpenErrorMessage(for: result, relativePath: page.relativePath)
                 }
             } catch {
                 await MainActor.run {
@@ -269,8 +504,12 @@ public final class AppModel {
         switch openWorkspaceHandler(workspace.url) {
         case .opened:
             flashToast("Opened in Obsidian")
+        case .openedVaultForRegistration:
+            flashToast("Opened vault in Obsidian")
         case .notInstalled:
             lastError = "Obsidian is not installed. Install it from obsidian.md."
+        case .requiresAdvancedURI:
+            lastError = "Obsidian graph support needs the Advanced URI plugin."
         case .vaultMissing:
             lastError = "The workspace folder no longer exists."
         case .failed(let message):
@@ -283,15 +522,75 @@ public final class AppModel {
             lastError = "Workspace is not ready yet."
             return
         }
+        guard isGraphPluginInstalledHandler(workspace.url) else {
+            if defaults.bool(forKey: graphPluginPromptSuppressedKey(for: workspace.url)) {
+                lastError = "Graph view needs the Advanced URI plugin. Open Settings to install it for this vault."
+            } else {
+                showGraphPluginInstallPrompt = true
+            }
+            return
+        }
         switch openGraphHandler(workspace.url) {
         case .opened:
-            flashToast("Press ⌘G inside Obsidian if graph doesn't appear")
+            flashToast("Opening graph in Obsidian")
+        case .openedVaultForRegistration:
+            flashToast("Opened vault in Obsidian. Click Graph again after it finishes loading.")
         case .notInstalled:
             lastError = "Obsidian is not installed. Install it from obsidian.md."
+        case .requiresAdvancedURI:
+            showGraphPluginInstallPrompt = true
         case .vaultMissing:
             lastError = "The workspace folder no longer exists."
         case .failed(let message):
             lastError = "Obsidian refused to open: \(message)"
+        }
+    }
+
+    public func dismissGraphPluginInstallPrompt() {
+        if let workspace {
+            defaults.set(true, forKey: graphPluginPromptSuppressedKey(for: workspace.url))
+        }
+        showGraphPluginInstallPrompt = false
+    }
+
+    public func installGraphPluginForCurrentWorkspace() async {
+        guard let workspace else {
+            lastError = "Workspace is not ready yet."
+            return
+        }
+        showGraphPluginInstallPrompt = false
+        lastError = nil
+        isInstallingGraphPlugin = true
+        let workspaceURL = workspace.url
+        let obsidianWasRunning = isObsidianRunningHandler()
+
+        do {
+            try await installGraphPluginHandler(workspaceURL)
+            defaults.removeObject(forKey: graphPluginPromptSuppressedKey(for: workspaceURL))
+            isInstallingGraphPlugin = false
+
+            if obsidianWasRunning {
+                flashToast("Advanced URI installed. Relaunch Obsidian once, then use Graph.")
+                return
+            }
+
+            switch openGraphHandler(workspaceURL) {
+            case .opened:
+                flashToast("Installed Advanced URI and opened graph")
+            case .openedVaultForRegistration:
+                flashToast("Installed Advanced URI and opened the vault. Click Graph again after Obsidian finishes loading.")
+            case .notInstalled:
+                lastError = "Obsidian is not installed. Install it from obsidian.md."
+            case .requiresAdvancedURI:
+                lastError = "Advanced URI was installed, but Obsidian has not loaded it yet. Launch Obsidian once and try Graph again."
+            case .vaultMissing:
+                lastError = "The workspace folder no longer exists."
+            case .failed(let message):
+                lastError = "Installed Advanced URI, but Obsidian refused to open the graph: \(message)"
+            }
+        } catch {
+            isInstallingGraphPlugin = false
+            lastError = "Could not install Advanced URI: \(error.localizedDescription)"
         }
     }
 
@@ -400,12 +699,19 @@ public final class AppModel {
     }
 
     private func setWorkspace(_ info: WorkspaceInfo) {
+        activeQueryTask?.cancel()
+        activeQueryTask = nil
         workspace = info
+        querySession = QuerySession()
+        queryHistory = []
+        showGraphPluginInstallPrompt = false
+        isInstallingGraphPlugin = false
         statusMessage = "Ready"
         lastError = nil
         defaults.set(info.path, forKey: currentWorkspaceKey)
         rememberWorkspacePath(info.path)
         feedStore.bindWorkspace(info.url)
+        loadHistory()
     }
 
     private func rememberWorkspacePath(_ path: String) {
@@ -461,6 +767,31 @@ public final class AppModel {
                     self?.launcherToast = nil
                 }
             }
+        }
+    }
+
+    private func graphPluginPromptSuppressedKey(for workspaceURL: URL) -> String {
+        graphPluginPromptSuppressedKeyPrefix
+            + workspaceURL.resolvingSymlinksInPath().standardizedFileURL.path
+    }
+
+    private func noteOpenErrorMessage(
+        for result: ObsidianOpener.Result,
+        relativePath: String
+    ) -> String? {
+        switch result {
+        case .opened:
+            return nil
+        case .openedVaultForRegistration:
+            return "Opened the vault in Obsidian. Try opening \(relativePath) again once Obsidian finishes loading."
+        case .notInstalled:
+            return "Obsidian is not installed. Install it from obsidian.md."
+        case .requiresAdvancedURI:
+            return "Obsidian graph support needs the Advanced URI plugin."
+        case .vaultMissing:
+            return "The wiki page could not be found at \(relativePath)."
+        case .failed(let message):
+            return "Obsidian refused to open: \(message)"
         }
     }
 }

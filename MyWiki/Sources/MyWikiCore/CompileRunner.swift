@@ -194,9 +194,24 @@ public final class CompileRunner: CompileRunning, @unchecked Sendable {
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
 
-        let termination = try await run(process: process)
-        let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+        let stdoutTask = readAllData(from: stdoutPipe, label: "stdout")
+        let stderrTask = readAllData(from: stderrPipe, label: "stderr")
+
+        let termination: (status: Int32, reason: Process.TerminationReason)
+        do {
+            termination = try await run(process: process)
+        } catch {
+            stdoutPipe.fileHandleForWriting.closeFile()
+            stderrPipe.fileHandleForWriting.closeFile()
+            _ = await stdoutTask.value
+            _ = await stderrTask.value
+            throw error
+        }
+
+        stdoutPipe.fileHandleForWriting.closeFile()
+        stderrPipe.fileHandleForWriting.closeFile()
+        let stdoutData = await stdoutTask.value
+        let stderrData = await stderrTask.value
         let stdout = String(decoding: stdoutData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
         let stderr = String(decoding: stderrData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -222,9 +237,24 @@ public final class CompileRunner: CompileRunning, @unchecked Sendable {
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
 
-        let termination = try await run(process: process)
-        let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+        let stdoutTask = readAllData(from: stdoutPipe, label: "stdout")
+        let stderrTask = readAllData(from: stderrPipe, label: "stderr")
+
+        let termination: (status: Int32, reason: Process.TerminationReason)
+        do {
+            termination = try await run(process: process)
+        } catch {
+            stdoutPipe.fileHandleForWriting.closeFile()
+            stderrPipe.fileHandleForWriting.closeFile()
+            _ = await stdoutTask.value
+            _ = await stderrTask.value
+            throw error
+        }
+
+        stdoutPipe.fileHandleForWriting.closeFile()
+        stderrPipe.fileHandleForWriting.closeFile()
+        let stdoutData = await stdoutTask.value
+        let stderrData = await stderrTask.value
         let stderr = String(decoding: stderrData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
         if !stderr.isEmpty {
             logger.log("Sidecar stderr for \(arguments.joined(separator: " ")): \(stderr)")
@@ -253,6 +283,20 @@ public final class CompileRunner: CompileRunning, @unchecked Sendable {
             } catch {
                 continuation.resume(throwing: error)
             }
+        }
+    }
+
+    private func readAllData(from pipe: Pipe, label: String) -> Task<Data, Never> {
+        Task { [logger] in
+            var data = Data()
+            do {
+                for try await byte in pipe.fileHandleForReading.bytes {
+                    data.append(byte)
+                }
+            } catch {
+                logger.log("Failed while reading sidecar \(label): \(error)")
+            }
+            return data
         }
     }
 

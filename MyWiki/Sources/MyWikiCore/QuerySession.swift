@@ -1,9 +1,40 @@
 import Foundation
 import Observation
 
+public struct QueryTurn: Identifiable, Codable, Equatable, Sendable {
+    public let id: UUID
+    public let question: String
+    public let answer: String
+    public let askedAt: Date
+
+    public init(question: String, answer: String, askedAt: Date = Date()) {
+        self.id = UUID()
+        self.question = question
+        self.answer = answer
+        self.askedAt = askedAt
+    }
+}
+
+/// Lightweight serializable record of a completed query conversation.
+public struct QueryHistoryRecord: Identifiable, Codable, Equatable, Sendable {
+    public let id: UUID
+    public let turns: [QueryTurn]
+    public let archivedAt: Date
+
+    public var firstQuestion: String {
+        turns.first?.question ?? ""
+    }
+
+    public init(id: UUID = UUID(), turns: [QueryTurn], archivedAt: Date = Date()) {
+        self.id = id
+        self.turns = turns
+        self.archivedAt = archivedAt
+    }
+}
+
 @MainActor
 @Observable
-public final class QuerySession {
+public final class QuerySession: Identifiable {
     public enum Status: Equatable, Sendable {
         case idle
         case running
@@ -12,6 +43,7 @@ public final class QuerySession {
         case cancelled
     }
 
+    public let id: UUID
     public private(set) var status: Status = .idle
     public private(set) var question: String = ""
     public private(set) var assistantText: String = ""
@@ -22,10 +54,31 @@ public final class QuerySession {
     public private(set) var permissionDenials: [String] = []
     public private(set) var startedAt: Date?
     public private(set) var statusDetail: String = ""
+    public private(set) var turns: [QueryTurn] = []
 
-    public init() {}
+    public var firstQuestion: String {
+        turns.first?.question ?? question
+    }
+
+    public init(id: UUID = UUID()) {
+        self.id = id
+    }
 
     public func start(question: String) {
+        self.question = question
+        self.status = .running
+        self.assistantText = ""
+        self.toolCalls = []
+        self.errorMessage = nil
+        self.costUSD = nil
+        self.durationMs = nil
+        self.permissionDenials = []
+        self.startedAt = Date()
+        self.statusDetail = ""
+        self.turns = []
+    }
+
+    public func startFollowUp(question: String) {
         self.question = question
         self.status = .running
         self.assistantText = ""
@@ -65,6 +118,11 @@ public final class QuerySession {
             self.costUSD = cost
             self.durationMs = duration
             self.permissionDenials = denials
+            self.turns.append(QueryTurn(
+                question: self.question,
+                answer: self.assistantText,
+                askedAt: self.startedAt ?? Date()
+            ))
             self.status = .completed
         case .failed(let message):
             self.errorMessage = message
@@ -81,6 +139,27 @@ public final class QuerySession {
         self.status = .cancelled
     }
 
+    /// Restore a session from saved history.
+    public func restore(turns: [QueryTurn]) {
+        self.turns = turns
+        self.toolCalls = []
+        self.errorMessage = nil
+        self.costUSD = nil
+        self.durationMs = nil
+        self.permissionDenials = []
+        self.startedAt = nil
+        self.statusDetail = ""
+        if let last = turns.last {
+            self.question = last.question
+            self.assistantText = last.answer
+            self.status = .completed
+        } else {
+            self.question = ""
+            self.assistantText = ""
+            self.status = .idle
+        }
+    }
+
     public func clear() {
         self.status = .idle
         self.question = ""
@@ -92,5 +171,6 @@ public final class QuerySession {
         self.permissionDenials = []
         self.startedAt = nil
         self.statusDetail = ""
+        self.turns = []
     }
 }
