@@ -75,8 +75,8 @@ def _emit_json(payload: dict[str, Any]) -> None:
     click.echo(json.dumps(payload, sort_keys=True))
 
 
-def _workspace_payload(config) -> dict[str, Any]:
-    info = get_status(config)
+def _workspace_payload(config, info: dict[str, Any] | None = None) -> dict[str, Any]:
+    info = info or get_status(config)
     return {
         "path": info["workspace_root"],
         "topic": info["topic"],
@@ -401,9 +401,16 @@ def status(path: str, json_output: bool) -> None:
             raise SystemExit(1)
         console.print("[red]No workspace found. Run 'compile init' first.[/red]")
         raise SystemExit(1)
-    info = get_status(config)
+    try:
+        info = get_status(config)
+    except Exception as exc:
+        if json_output:
+            _emit_machine_error(str(exc), context="status")
+            raise SystemExit(1)
+        console.print(f"[red]{exc}[/red]")
+        raise SystemExit(1)
     if json_output:
-        _emit_json({"ok": True, "workspace": _workspace_payload(config)})
+        _emit_json({"ok": True, "workspace": _workspace_payload(config, info)})
         return
     table = Table(title=info["topic"])
     table.add_column("", style="bold")
@@ -621,6 +628,16 @@ def health(path: str, json_output: bool) -> None:
         counts = ", ".join(f"{k}={v}" for k, v in data["counts"].items())
         console.print(f"  {section}: {data['status']} ({counts})")
 
+    metrics = report.get("metrics", {})
+    if "knowledge_page_count" in metrics:
+        console.print(
+            f"  editorial: knowledge_pages={metrics['knowledge_page_count']}, "
+            f"pages={metrics.get('pages', 0)}, "
+            f"source_to_knowledge_page_ratio={metrics.get('source_to_knowledge_page_ratio', 0)}, "
+            f"unanchored_sources={metrics.get('source_notes_without_topic_anchors', 0)}"
+        )
+        console.print("  (use --json-output for machine-readable issues and full metrics)")
+
     if report["issues"]:
         console.print()
         for issue in report["issues"][:15]:
@@ -821,6 +838,12 @@ def obsidian_refresh(path: str) -> None:
     help="Read markdown body from a UTF-8 file.",
 )
 @click.option("--summary", default=None, help="Optional frontmatter summary.")
+@click.option(
+    "--status",
+    type=click.Choice(["seed", "emerging", "stable"]),
+    default=None,
+    help="Set the page status (seed, emerging, stable). Overrides the existing frontmatter value.",
+)
 @click.option("--relative-path", default=None, help="Optional target path relative to the vault root.")
 @click.option("--tag", "tags", multiple=True, help="Repeat to add tags.")
 @click.option("--source", "sources", multiple=True, help="Repeat to add supporting sources.")
@@ -832,6 +855,7 @@ def obsidian_upsert(
     body: str | None,
     body_file: Path | None,
     summary: str | None,
+    status: str | None,
     relative_path: str | None,
     tags: tuple[str, ...],
     sources: tuple[str, ...],
@@ -840,6 +864,20 @@ def obsidian_upsert(
     """Create or update a maintained page."""
     if body is not None and body_file is not None:
         console.print("[red]Use either --body or --body-file, not both.[/red]")
+        raise SystemExit(1)
+
+    root = Path(path).resolve()
+    connector = ObsidianConnector(root)
+
+    # Resolve the exact page that upsert will overwrite, so body preservation
+    # and shell detection both operate on the right target (not just any page
+    # that shares the title).
+    try:
+        existing = connector.find_upsert_target(
+            title=title, page_type=page_type, relative_path=relative_path,
+        )
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
         raise SystemExit(1)
 
     if body_file is not None:
@@ -851,21 +889,23 @@ def obsidian_upsert(
         except OSError as exc:
             console.print(f"[red]Failed to read body file:[/red] {exc}")
             raise SystemExit(1)
+    elif body is not None:
+        body_text = body
+    elif existing is not None:
+        body_text = existing.body
     else:
-        body_text = body or ""
+        console.print(
+            "[red]No body provided and no existing page to preserve.[/red] "
+            "Pass --body or --body-file to create a new page."
+        )
+        raise SystemExit(1)
 
-    root = Path(path).resolve()
-    connector = ObsidianConnector(root)
-
-    # Capture whether the existing page is a registration shell before upserting.
-    existing_was_shell = False
-    if page_type == "source":
-        try:
-            existing = connector.get_page(title)
-            if existing.page_type == "source" and "This is a registration shell." in existing.body:
-                existing_was_shell = True
-        except (FileNotFoundError, ValueError):
-            pass
+    existing_was_shell = (
+        existing is not None
+        and existing.page_type == "source"
+        and page_type == "source"
+        and "This is a registration shell." in existing.body
+    )
 
     page = connector.upsert_page(
         title=title,
@@ -876,6 +916,7 @@ def obsidian_upsert(
         aliases=list(aliases),
         summary=summary,
         relative_path=relative_path,
+        extra_frontmatter={"status": status} if status else None,
     )
 
     # When a registration shell is replaced with real content, mark raw sources processed.

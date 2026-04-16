@@ -38,7 +38,7 @@ def init_workspace(root: Path, topic: str, description: str = "") -> Config:
         (root / subdir).mkdir(parents=True, exist_ok=True)
 
     save_config(config)
-    _save_state(config, {"processed": {}, "created_at": _now_machine()})
+    _save_state(config, {"processed": {}, "created_at": now_machine()})
 
     _write_initial_index(config)
     _write_initial_overview(config)
@@ -65,14 +65,14 @@ def read_schema(config: Config) -> str:
 def load_state(config: Config) -> dict:
     if config.state_path.exists():
         return json.loads(config.state_path.read_text())
-    return {"processed": {}, "created_at": _now_machine()}
+    return {"processed": {}, "created_at": now_machine()}
 
 
 def mark_processed(config: Config, raw_path: Path, pages_touched: list[str]) -> None:
     state = load_state(config)
     relative = str(raw_path.relative_to(config.workspace_root))
     state["processed"][relative] = {
-        "processed_at": _now_machine(),
+        "processed_at": now_machine(),
         "pages_touched": pages_touched,
         "size": raw_path.stat().st_size,
     }
@@ -108,16 +108,13 @@ def get_status(config: Config) -> dict:
         for relative in state.get("processed", {})
         if relative in raw_relatives
     )
-    try:
-        connector = ObsidianConnector(config.workspace_root)
-        needs_document_review = sum(
-            1
-            for page in connector.scan()
-            if page.page_type == "source"
-            and str(page.frontmatter.get("review_status") or "").strip() == "needs_document_review"
-        )
-    except Exception:
-        needs_document_review = 0
+    connector = ObsidianConnector(config.workspace_root)
+    needs_document_review = sum(
+        1
+        for page in connector.scan()
+        if page.page_type == "source"
+        and str(page.frontmatter.get("review_status") or "").strip() == "needs_document_review"
+    )
     return {
         "topic": config.topic,
         "description": config.description,
@@ -173,7 +170,7 @@ def collect_pages_by_type(config: Config) -> dict[str, list[dict[str, str]]]:
 
 
 def write_index(config: Config, pages_by_type: dict[str, list[dict[str, str]]]) -> None:
-    now = _now_frontmatter()
+    now = now_frontmatter()
     created = _preserved_created(config.wiki_dir / "index.md", now)
     sections = [
         ("Articles", "articles"), ("Sources", "sources"),
@@ -198,7 +195,7 @@ def write_index(config: Config, pages_by_type: dict[str, list[dict[str, str]]]) 
 
 
 def write_overview(config: Config, pages_by_type: dict[str, list[dict[str, str]]]) -> None:
-    now = _now_frontmatter()
+    now = now_frontmatter()
     created = _preserved_created(config.wiki_dir / "overview.md", now)
     counts = {k: len(v) for k, v in pages_by_type.items()}
     total = sum(counts.values())
@@ -249,7 +246,7 @@ def write_overview(config: Config, pages_by_type: dict[str, list[dict[str, str]]
 
 def append_log_entry(config: Config, kind: str, title: str, lines: list[str] | None = None) -> None:
     log_path = config.wiki_dir / "log.md"
-    now = _now_frontmatter()
+    now = now_frontmatter()
     body = "\n".join(f"- {line}" for line in (lines or [])) or "- No details recorded."
     entry = f"\n\n## [{now}] {kind} | {title}\n{body}\n"
 
@@ -269,13 +266,6 @@ def append_log_entry(config: Config, kind: str, title: str, lines: list[str] | N
 
 
 # --- Internals ---
-
-def _now_frontmatter() -> str:
-    return now_frontmatter()
-
-
-def _now_machine() -> str:
-    return now_machine()
 
 
 def _save_state(config: Config, state: dict) -> None:
@@ -319,7 +309,7 @@ def _write_initial_overview(config: Config) -> None:
 
 
 def _write_initial_log(config: Config) -> None:
-    now = _now_frontmatter()
+    now = now_frontmatter()
     (config.wiki_dir / "log.md").write_text(
         f"---\ntitle: Log\ntype: log\ncreated: {now}\nupdated: {now}\n---\n\n"
         f"# Compile Log\n\n## [{now}] init | {config.topic}\n- Workspace initialized\n"

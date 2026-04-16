@@ -166,6 +166,17 @@ class TestGetStatus:
 
         assert status["needs_document_review"] == 1
 
+    def test_scan_failures_surface_instead_of_looking_clean(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        config = init_workspace(tmp_path, "Test")
+
+        def boom(self):
+            raise RuntimeError("scan failed")
+
+        monkeypatch.setattr("compile.obsidian.ObsidianConnector.scan", boom)
+
+        with pytest.raises(RuntimeError, match="scan failed"):
+            get_status(config)
+
     def test_generated_assets_excluded_from_status(self, tmp_path: Path) -> None:
         config = init_workspace(tmp_path, "Test")
         (tmp_path / "raw" / "paper.md").write_text("A")

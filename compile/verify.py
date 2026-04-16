@@ -75,10 +75,13 @@ def audit_vault_content(root: Path) -> list[dict[str, Any]]:
     unanchored_source_pages = connector.source_pages_without_topic_anchors()
     unanchored_source_paths = {page.relative_path for page in unanchored_source_pages}
 
+    def supporting_count(page: Any) -> int:
+        return len(connector.supporting_source_titles(page))
+
     knowledge_pages = [page for page in pages if page.page_type in ARTICLE_PAGE_TYPES]
     single_source_pages = [
         page for page in knowledge_pages
-        if int(page.frontmatter.get("source_count") or 0) <= 1
+        if supporting_count(page) <= 1
     ]
     if len(knowledge_pages) >= 5 and len(single_source_pages) / len(knowledge_pages) >= 0.6:
         issues.append(
@@ -107,17 +110,27 @@ def audit_vault_content(root: Path) -> list[dict[str, Any]]:
         )
 
     for page in pages:
-        issues.extend(_audit_page(page, unanchored_source_paths=unanchored_source_paths))
+        issues.extend(
+            _audit_page(
+                page,
+                unanchored_source_paths=unanchored_source_paths,
+                source_count=supporting_count(page),
+            )
+        )
 
     return issues
 
 
-def _audit_page(page: Any, *, unanchored_source_paths: set[str]) -> list[dict[str, Any]]:
+def _audit_page(
+    page: Any,
+    *,
+    unanchored_source_paths: set[str],
+    source_count: int,
+) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     summary = str(page.frontmatter.get("summary") or "").strip()
     status = str(page.frontmatter.get("status") or "").strip().lower()
     review_status = str(page.frontmatter.get("review_status") or "").strip().lower()
-    source_count = int(page.frontmatter.get("source_count") or 0)
 
     if summary and MALFORMED_SUMMARY_RE.search(summary):
         issues.append(

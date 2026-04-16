@@ -28,6 +28,6 @@ Workflow:
    - For Marp: write slide markdown to `/tmp/deck.md` and use `compile render marp ... --body-file /tmp/deck.md`.
    - For chart: write the matplotlib script to `/tmp/chart.py` and use `compile render chart ... --script-file /tmp/chart.py`.
    - Render commands create and log the output page automatically. Run `compile obsidian refresh` and `compile health`.
-   - For markdown output: write the answer to a temporary file and use `compile obsidian upsert "Answer Title" --page-type output --body-file /tmp/answer.md`. Run `compile obsidian refresh` and `compile health`, then append to log.
+   - For plain markdown output: write the answer to a temporary file, then save it as an `output` page using the low-level page writer (`compile obsidian upsert "Answer Title" --page-type output --body-file /tmp/answer.md`). Run `compile obsidian refresh` and `compile health`, then append to log.
 
 8. If the user declines, move on.

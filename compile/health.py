@@ -6,17 +6,9 @@ from pathlib import Path
 from typing import Any
 
 from compile.dates import now_machine
-from compile.obsidian import ObsidianConnector, VaultIssue
+from compile.obsidian import ObsidianConnector, READINESS_ISSUE_CODES, VaultIssue
+from compile.page_types import ARTICLE_PAGE_TYPES
 from compile.verify import audit_vault_content
-
-
-READINESS_CODES = {
-    "missing_obsidian_config",
-    "no_wikilinks",
-    "unresolved_links",
-    "raw_files_without_source_notes",
-    "source_pages_without_raw_links",
-}
 
 
 def _severity_counts(issues: list[dict[str, Any]]) -> dict[str, int]:
@@ -42,8 +34,8 @@ def _split_structural_issues(issues: list[VaultIssue]) -> tuple[list[dict[str, A
     graph: list[dict[str, Any]] = []
     for issue in issues:
         payload = issue.to_dict()
-        payload["category"] = "obsidian_readiness" if issue.code in READINESS_CODES else "graph_health"
-        if issue.code in READINESS_CODES:
+        payload["category"] = "obsidian_readiness" if issue.code in READINESS_ISSUE_CODES else "graph_health"
+        if issue.code in READINESS_ISSUE_CODES:
             readiness.append(payload)
         else:
             graph.append(payload)
@@ -145,6 +137,9 @@ def build_health_report(
         content_counts=content_counts,
     )
 
+    source_count = sum(1 for page in vault.pages if page.page_type == "source")
+    knowledge_page_count = sum(1 for page in vault.pages if page.page_type in ARTICLE_PAGE_TYPES)
+
     issues = [*readiness_issues, *graph_issues]
     issues.extend(
         {
@@ -198,6 +193,8 @@ def build_health_report(
                 if page.page_type == "source"
                 and str(page.frontmatter.get("review_status") or "").strip() == "needs_document_review"
             ),
+            "knowledge_page_count": knowledge_page_count,
+            "source_to_knowledge_page_ratio": round(source_count / max(knowledge_page_count, 1), 1),
         },
         "issues": issues,
     }

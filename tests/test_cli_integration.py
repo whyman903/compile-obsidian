@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from click.testing import CliRunner
@@ -65,6 +66,16 @@ class TestStatusCommand:
         assert "Test Wiki" in result.output
         assert "Description" in result.output
 
+    def test_status_scan_failure_surfaces_clean_error(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test Wiki", "Description")
+        runner = CliRunner()
+
+        with patch("compile.obsidian.ObsidianConnector.scan", side_effect=RuntimeError("scan failed")):
+            result = runner.invoke(main, ["status", "--path", str(tmp_path)])
+
+        assert result.exit_code == 1
+        assert "scan failed" in result.output
+
 
 class TestMachineReadableCommands:
     def test_init_json_success(self, tmp_path: Path) -> None:
@@ -110,6 +121,48 @@ class TestMachineReadableCommands:
         payload = json.loads(result.output)
         assert payload["ok"] is False
         assert "No workspace found" in payload["error"]
+
+    def test_status_json_scan_failure(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test Wiki", "Description")
+        runner = CliRunner()
+
+        with patch("compile.obsidian.ObsidianConnector.scan", side_effect=RuntimeError("scan failed")):
+            result = runner.invoke(main, ["status", "--path", str(tmp_path), "--json-output"])
+
+        assert result.exit_code != 0
+        payload = json.loads(result.output)
+        assert payload["ok"] is False
+        assert payload["context"] == "status"
+        assert "scan failed" in payload["error"]
+
+    def test_status_json_does_not_recompute_status_after_success(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test Wiki", "Description")
+        runner = CliRunner()
+        calls = {"count": 0}
+
+        def flaky_status(config):
+            calls["count"] += 1
+            if calls["count"] > 1:
+                raise RuntimeError("second call failed")
+            return {
+                "topic": "Test Wiki",
+                "description": "Description",
+                "workspace_root": str(tmp_path),
+                "raw_files": 0,
+                "processed": 0,
+                "unprocessed": 0,
+                "needs_document_review": 0,
+                "wiki_pages": 3,
+            }
+
+        with patch("compile.cli.get_status", side_effect=flaky_status):
+            result = runner.invoke(main, ["status", "--path", str(tmp_path), "--json-output"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["ok"] is True
+        assert payload["workspace"]["topic"] == "Test Wiki"
+        assert calls["count"] == 1
 
     def test_ingest_json_stream_local_file(self, tmp_path: Path) -> None:
         init_workspace(tmp_path, "Test")
@@ -1267,6 +1320,241 @@ class TestObsidianUpsertCommand:
         content = (tmp_path / "wiki" / "articles" / "Evolving.md").read_text()
         assert "Version 2" in content
 
+    def test_status_flag_sets_and_overrides(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        runner = CliRunner()
+
+        runner.invoke(main, [
+            "obsidian", "upsert", "Maturing",
+            "--page-type", "article",
+            "--body", "Initial body.",
+            "--status", "seed",
+            "--path", str(tmp_path),
+        ])
+        content = (tmp_path / "wiki" / "articles" / "Maturing.md").read_text()
+        assert "status: seed" in content
+
+        runner.invoke(main, [
+            "obsidian", "upsert", "Maturing",
+            "--page-type", "article",
+            "--body", "Expanded body.",
+            "--status", "emerging",
+            "--path", str(tmp_path),
+        ])
+        content = (tmp_path / "wiki" / "articles" / "Maturing.md").read_text()
+        assert "status: emerging" in content
+        assert "status: seed" not in content
+
+    def test_status_only_update_preserves_body(self, tmp_path: Path) -> None:
+        """Status demotion without a body flag must not wipe the page body."""
+        init_workspace(tmp_path, "Test")
+        runner = CliRunner()
+
+        runner.invoke(main, [
+            "obsidian", "upsert", "Preserve",
+            "--page-type", "article",
+            "--body", "Substantive body with real content.",
+            "--status", "stable",
+            "--path", str(tmp_path),
+        ])
+        runner.invoke(main, [
+            "obsidian", "upsert", "Preserve",
+            "--page-type", "article",
+            "--status", "seed",
+            "--path", str(tmp_path),
+        ])
+
+        content = (tmp_path / "wiki" / "articles" / "Preserve.md").read_text()
+        assert "status: seed" in content
+        assert "Substantive body with real content." in content
+
+    def test_upsert_with_no_body_and_no_existing_page_errors(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        runner = CliRunner()
+        result = runner.invoke(main, [
+            "obsidian", "upsert", "Ghost",
+            "--page-type", "article",
+            "--status", "seed",
+            "--path", str(tmp_path),
+        ])
+
+        assert result.exit_code == 1
+        assert "No body provided" in result.output
+
+    def test_status_only_update_does_not_borrow_body_from_other_page_type(self, tmp_path: Path) -> None:
+        """If a page with the same title but a different type exists, a status-only
+        upsert must NOT reuse that page's body — it must error because there's no
+        same-type page to preserve."""
+        init_workspace(tmp_path, "Test")
+        runner = CliRunner()
+
+        runner.invoke(main, [
+            "obsidian", "upsert", "Shared",
+            "--page-type", "map",
+            "--body", "Map-only body — must not leak into the article.",
+            "--path", str(tmp_path),
+        ])
+        result = runner.invoke(main, [
+            "obsidian", "upsert", "Shared",
+            "--page-type", "article",
+            "--status", "seed",
+            "--path", str(tmp_path),
+        ])
+
+        assert result.exit_code == 1
+        assert "No body provided" in result.output
+        assert not (tmp_path / "wiki" / "articles" / "Shared.md").exists()
+
+    def test_status_only_update_with_relative_path_preserves_body(self, tmp_path: Path) -> None:
+        """--relative-path targets a specific file; status-only upsert must
+        preserve that file's body, not error."""
+        init_workspace(tmp_path, "Test")
+        runner = CliRunner()
+
+        runner.invoke(main, [
+            "obsidian", "upsert", "Pinned",
+            "--page-type", "article",
+            "--body", "Pinned body content.",
+            "--relative-path", "wiki/articles/custom-path.md",
+            "--path", str(tmp_path),
+        ])
+        result = runner.invoke(main, [
+            "obsidian", "upsert", "Pinned",
+            "--page-type", "article",
+            "--status", "emerging",
+            "--relative-path", "wiki/articles/custom-path.md",
+            "--path", str(tmp_path),
+        ])
+
+        assert result.exit_code == 0
+        content = (tmp_path / "wiki" / "articles" / "custom-path.md").read_text()
+        assert "status: emerging" in content
+        assert "Pinned body content." in content
+
+    def test_ambiguous_title_surfaces_error(self, tmp_path: Path) -> None:
+        """When upsert cannot unambiguously resolve a target, the command must
+        fail with the connector's ambiguity message — not silently write."""
+        init_workspace(tmp_path, "Test")
+        articles_dir = tmp_path / "wiki" / "articles"
+        articles_dir.mkdir(parents=True, exist_ok=True)
+        # Two articles with the same title in different files.
+        for slug in ("dup-a.md", "dup-b.md"):
+            (articles_dir / slug).write_text(
+                "---\ntitle: Duplicate\ntype: article\nstatus: seed\n---\n\n"
+                "# Duplicate\n\nBody.\n"
+            )
+        runner = CliRunner()
+        result = runner.invoke(main, [
+            "obsidian", "upsert", "Duplicate",
+            "--page-type", "article",
+            "--status", "emerging",
+            "--path", str(tmp_path),
+        ])
+
+        assert result.exit_code == 1
+        assert "Ambiguous" in result.output
+
+    def test_title_rename_rewrites_stale_h1(self, tmp_path: Path) -> None:
+        """If the caller renames a page (via new title + same --relative-path),
+        the preserved body's stale ``# Old Title`` heading must be rewritten
+        to match the new frontmatter title."""
+        init_workspace(tmp_path, "Test")
+        runner = CliRunner()
+
+        runner.invoke(main, [
+            "obsidian", "upsert", "Old Title",
+            "--page-type", "article",
+            "--body", "Body paragraph after the heading.",
+            "--relative-path", "wiki/articles/custom.md",
+            "--path", str(tmp_path),
+        ])
+        runner.invoke(main, [
+            "obsidian", "upsert", "New Title",
+            "--page-type", "article",
+            "--status", "emerging",
+            "--relative-path", "wiki/articles/custom.md",
+            "--path", str(tmp_path),
+        ])
+
+        content = (tmp_path / "wiki" / "articles" / "custom.md").read_text()
+        assert "title: New Title" in content
+        assert "# New Title" in content
+        assert "# Old Title" not in content
+        assert "Body paragraph after the heading." in content
+
+    def test_title_rename_via_positional_rewrites_stale_h1(self, tmp_path: Path) -> None:
+        """Same fix applies when resolution goes through title (no --relative-path):
+        a status-only upsert with a new title must rewrite the stale H1."""
+        init_workspace(tmp_path, "Test")
+        runner = CliRunner()
+
+        runner.invoke(main, [
+            "obsidian", "upsert", "Alpha",
+            "--page-type", "article",
+            "--body", "Real content.",
+            "--path", str(tmp_path),
+        ])
+        # Rename in-place by passing the new title and pointing at the same file.
+        runner.invoke(main, [
+            "obsidian", "upsert", "Beta",
+            "--page-type", "article",
+            "--status", "seed",
+            "--relative-path", "wiki/articles/Alpha.md",
+            "--path", str(tmp_path),
+        ])
+
+        content = (tmp_path / "wiki" / "articles" / "Alpha.md").read_text()
+        assert "title: Beta" in content
+        assert "# Beta" in content
+        assert "# Alpha" not in content
+
+    def test_user_provided_body_heading_is_not_rewritten(self, tmp_path: Path) -> None:
+        """Don't clobber a caller-supplied body whose H1 differs from the title
+        — that's an explicit choice, not a stale preservation artifact."""
+        init_workspace(tmp_path, "Test")
+        runner = CliRunner()
+
+        runner.invoke(main, [
+            "obsidian", "upsert", "Prior",
+            "--page-type", "article",
+            "--body", "# Prior\n\nBody.",
+            "--path", str(tmp_path),
+        ])
+        runner.invoke(main, [
+            "obsidian", "upsert", "Prior",
+            "--page-type", "article",
+            "--body", "# Custom Intro\n\nRewritten body.",
+            "--path", str(tmp_path),
+        ])
+
+        content = (tmp_path / "wiki" / "articles" / "Prior.md").read_text()
+        assert "# Custom Intro" in content
+        assert "# Prior" not in content
+
+    def test_status_change_rebuilds_cssclasses(self, tmp_path: Path) -> None:
+        """Demotion/promotion must not leave stale maturity labels in cssclasses."""
+        init_workspace(tmp_path, "Test")
+        runner = CliRunner()
+
+        runner.invoke(main, [
+            "obsidian", "upsert", "Cycling",
+            "--page-type", "article",
+            "--body", "Body.",
+            "--status", "stable",
+            "--path", str(tmp_path),
+        ])
+        runner.invoke(main, [
+            "obsidian", "upsert", "Cycling",
+            "--page-type", "article",
+            "--status", "seed",
+            "--path", str(tmp_path),
+        ])
+
+        content = (tmp_path / "wiki" / "articles" / "Cycling.md").read_text()
+        assert "- seed" in content
+        assert "- stable" not in content
+        assert "- article" in content
+
 
 class TestObsidianRefreshCommand:
     def test_refresh(self, tmp_path: Path) -> None:
@@ -1476,3 +1764,13 @@ class TestHealthCommand:
         runner = CliRunner()
         result = runner.invoke(main, ["health", "--path", str(tmp_path)])
         assert result.exit_code == 0
+
+    def test_health_text_surfaces_editorial_metrics(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        runner = CliRunner()
+        result = runner.invoke(main, ["health", "--path", str(tmp_path)])
+        assert result.exit_code == 0
+        assert "knowledge_pages" in result.output
+        assert "source_to_knowledge_page_ratio" in result.output
+        assert "unanchored_sources" in result.output
+        assert "--json-output" in result.output
