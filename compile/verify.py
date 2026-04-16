@@ -71,6 +71,9 @@ def audit_vault_content(root: Path) -> list[dict[str, Any]]:
     connector = ObsidianConnector(root.resolve())
     pages = connector.scan()
     issues: list[dict[str, Any]] = []
+    source_pages = [page for page in pages if page.page_type == "source"]
+    unanchored_source_pages = connector.source_pages_without_topic_anchors()
+    unanchored_source_paths = {page.relative_path for page in unanchored_source_pages}
 
     knowledge_pages = [page for page in pages if page.page_type in ARTICLE_PAGE_TYPES]
     single_source_pages = [
@@ -90,13 +93,26 @@ def audit_vault_content(root: Path) -> list[dict[str, Any]]:
             }
         )
 
+    if source_pages and len(source_pages) >= 5 and len(unanchored_source_pages) / len(source_pages) >= 0.4:
+        issues.append(
+            {
+                "type": "topic_hub_coverage_gap",
+                "severity": "medium",
+                "title": "Many source notes are still disconnected from article and map pages.",
+                "suggestion": (
+                    "Link source notes to existing article or map pages where appropriate, "
+                    "or create lightweight map pages for broad topics that still have no hub."
+                ),
+            }
+        )
+
     for page in pages:
-        issues.extend(_audit_page(page))
+        issues.extend(_audit_page(page, unanchored_source_paths=unanchored_source_paths))
 
     return issues
 
 
-def _audit_page(page: Any) -> list[dict[str, Any]]:
+def _audit_page(page: Any, *, unanchored_source_paths: set[str]) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     summary = str(page.frontmatter.get("summary") or "").strip()
     status = str(page.frontmatter.get("status") or "").strip().lower()
@@ -155,6 +171,19 @@ def _audit_page(page: Any) -> list[dict[str, Any]]:
                 "suggestion": (
                     "Review the raw PDF for layout, tables, figures, captions, and reading order, "
                     "then run `compile review mark-reviewed <locator>`."
+                ),
+            }
+        )
+
+    if page.page_type == "source" and page.relative_path in unanchored_source_paths:
+        issues.append(
+            {
+                "type": "source_without_topic_anchor",
+                "severity": "low",
+                "title": f"{page.title}: source note is not connected to any article or map page.",
+                "suggestion": (
+                    "Add a meaningful wikilink to an existing article or map page, or create a lightweight "
+                    "map page if this source belongs to a broad topic with no current hub."
                 ),
             }
         )

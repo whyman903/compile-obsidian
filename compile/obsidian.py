@@ -13,7 +13,7 @@ import yaml
 
 from compile.dates import format_machine_datetime, now_frontmatter
 from compile.markdown import LINE_RE, WORD_RE, extract_wikilinks, parse_markdown_file
-from compile.page_types import ARTICLE_PAGE_TYPES, CONTENT_PAGE_TYPES, NAV_PAGE_TYPES
+from compile.page_types import ARTICLE_PAGE_TYPES, CONTENT_PAGE_TYPES, MAP_PAGE_TYPES, NAV_PAGE_TYPES
 
 
 IGNORED_DIRS = {
@@ -163,6 +163,16 @@ class VaultPage:
     frontmatter: dict[str, Any]
     body: str
     outbound_link_targets: list[str]
+    summary_text: str = ""
+    title_key: str = ""
+    path_key: str = ""
+    summary_key: str = ""
+    alias_keys: frozenset[str] = field(default_factory=frozenset)
+    title_terms: frozenset[str] = field(default_factory=frozenset)
+    alias_terms: frozenset[str] = field(default_factory=frozenset)
+    tag_terms: frozenset[str] = field(default_factory=frozenset)
+    summary_terms: frozenset[str] = field(default_factory=frozenset)
+    body_lower: str = ""
     resolved_outbound_links: list[str] = field(default_factory=list)
     resolved_file_links: list[str] = field(default_factory=list)
     unresolved_outbound_links: list[str] = field(default_factory=list)
@@ -536,12 +546,13 @@ class ObsidianConnector:
         query = query.strip()
         query_key = _normalize_key(query)
         query_terms = _search_terms(query)
+        query_term_set = frozenset(query_terms)
         hits: list[SearchHit] = []
 
         for page in pages:
             if page_type and page.page_type != page_type:
                 continue
-            score, reasons = self._score_page(page, query_key, query_terms)
+            score, reasons = self._score_page(page, query_key, query_term_set)
             if query and score <= 0:
                 continue
             hits.append(
@@ -549,7 +560,7 @@ class ObsidianConnector:
                     title=page.title,
                     relative_path=page.relative_path,
                     page_type=page.page_type,
-                    summary=str(page.frontmatter.get("summary", "")).strip(),
+                    summary=page.summary_text,
                     score=score,
                     reasons=reasons,
                     snippet=self._snippet_for_page(page, query_terms),
@@ -601,6 +612,26 @@ class ObsidianConnector:
             cited_source_pages=cited_source_pages,
             unresolved_targets=page.unresolved_outbound_links,
         )
+
+    def topic_anchor_pages(self, page_or_locator: VaultPage | str) -> list[VaultPage]:
+        self.scan()
+        page = self.get_page(page_or_locator) if isinstance(page_or_locator, str) else page_or_locator
+        anchors: dict[str, VaultPage] = {}
+        for title in [*page.resolved_outbound_links, *page.inbound_links]:
+            for candidate in self._page_by_locator.get(_normalize_key(title), []):
+                if candidate.relative_path == page.relative_path:
+                    continue
+                if candidate.page_type not in ARTICLE_PAGE_TYPES | MAP_PAGE_TYPES:
+                    continue
+                anchors[candidate.relative_path] = candidate
+        return sorted(anchors.values(), key=lambda item: (item.title.lower(), item.relative_path))
+
+    def source_pages_without_topic_anchors(self) -> list[VaultPage]:
+        return [
+            page
+            for page in self.scan()
+            if page.page_type == "source" and not self.topic_anchor_pages(page)
+        ]
 
     def graph(self) -> GraphReport:
         pages = self.scan()
@@ -931,6 +962,7 @@ class ObsidianConnector:
         tags = _coerce_list(frontmatter.get("tags"))
         aliases = _coerce_list(frontmatter.get("aliases"))
         outbound_link_targets = extract_wikilinks(body)
+        summary = str(frontmatter.get("summary", "")).strip()
         word_count = len(WORD_RE.findall(body))
         return VaultPage(
             title=title,
@@ -943,6 +975,16 @@ class ObsidianConnector:
             frontmatter=frontmatter,
             body=body.strip(),
             outbound_link_targets=outbound_link_targets,
+            summary_text=summary,
+            title_key=_normalize_key(title),
+            path_key=_normalize_key(relative_path),
+            summary_key=_normalize_key(summary),
+            alias_keys=frozenset(_normalize_key(alias) for alias in aliases if alias.strip()),
+            title_terms=frozenset(_search_terms(title)),
+            alias_terms=frozenset(_search_terms(" ".join(aliases))),
+            tag_terms=frozenset(_search_terms(" ".join(tags))),
+            summary_terms=frozenset(_search_terms(summary)),
+            body_lower=body.lower(),
         )
 
     def _locator_keys_for_page(self, page: VaultPage) -> set[str]:
@@ -977,68 +1019,58 @@ class ObsidianConnector:
         self,
         page: VaultPage,
         query_key: str,
-        query_terms: list[str],
+        query_terms: frozenset[str],
     ) -> tuple[int, list[str]]:
         if not query_key and not query_terms:
             return (1, ["all-pages"])
 
         score = 0
         reasons: list[str] = []
-        title_key = _normalize_key(page.title)
-        path_key = _normalize_key(page.relative_path)
-        summary = str(page.frontmatter.get("summary", "")).strip()
-        aliases_lower = [_normalize_key(alias) for alias in page.aliases]
 
-        if query_key and title_key == query_key:
+        if query_key and page.title_key == query_key:
             score += 120
             reasons.append("exact-title")
-        elif query_key and query_key in title_key:
+        elif query_key and query_key in page.title_key:
             score += 80
             reasons.append("title-match")
 
-        if query_key and any(alias == query_key for alias in aliases_lower):
+        if query_key and query_key in page.alias_keys:
             score += 70
             reasons.append("exact-alias")
-        elif query_key and any(query_key in alias for alias in aliases_lower):
+        elif query_key and any(query_key in alias for alias in page.alias_keys):
             score += 40
             reasons.append("alias-match")
 
-        if query_key and query_key in path_key:
+        if query_key and query_key in page.path_key:
             score += 45
             reasons.append("path-match")
 
-        if query_key and summary and query_key in _normalize_key(summary):
+        if query_key and page.summary_key and query_key in page.summary_key:
             score += 35
             reasons.append("summary-match")
 
         if query_terms:
-            title_terms = set(_search_terms(page.title))
-            alias_terms = set(_search_terms(" ".join(page.aliases)))
-            tag_terms = set(_search_terms(" ".join(page.tags)))
-            summary_terms = set(_search_terms(summary))
-            body_terms = _search_terms(page.body)
-            body_term_set = set(body_terms)
-            overlap = set(query_terms) & title_terms
+            overlap = query_terms & page.title_terms
             if overlap:
                 score += 16 * len(overlap)
                 reasons.append("title-terms")
-            alias_overlap = set(query_terms) & alias_terms
+            alias_overlap = query_terms & page.alias_terms
             if alias_overlap:
                 score += 10 * len(alias_overlap)
                 reasons.append("alias-terms")
-            tag_overlap = set(query_terms) & tag_terms
+            tag_overlap = query_terms & page.tag_terms
             if tag_overlap:
                 score += 8 * len(tag_overlap)
                 reasons.append("tag-match")
-            summary_overlap = set(query_terms) & summary_terms
+            summary_overlap = query_terms & page.summary_terms
             if summary_overlap:
                 score += 6 * len(summary_overlap)
                 reasons.append("summary-terms")
-            body_overlap = set(query_terms) & body_term_set
+            body_overlap = {term for term in query_terms if term in page.body_lower}
             if body_overlap:
                 score += 4 * len(body_overlap)
                 reasons.append("body-match")
-            if query_terms and all(term in (summary_terms | body_term_set) for term in query_terms):
+            if all(term in page.summary_terms or term in page.body_lower for term in query_terms):
                 score += 12
                 reasons.append("all-terms")
 
@@ -1047,15 +1079,15 @@ class ObsidianConnector:
         return score, reasons
 
     def _snippet_for_page(self, page: VaultPage, query_terms: list[str]) -> str:
-        summary = str(page.frontmatter.get("summary", "")).strip()
-        candidates = [summary, *LINE_RE.split(page.body)]
+        candidates = [page.summary_text, *LINE_RE.split(page.body)]
         for line in candidates:
             stripped = line.strip()
             if not stripped or stripped.startswith("#"):
                 continue
-            if not query_terms or any(term in stripped.lower() for term in query_terms):
+            lowered = stripped.lower()
+            if not query_terms or any(term in lowered for term in query_terms):
                 return stripped[:180]
-        return summary or page.body[:180].strip()
+        return page.summary_text or page.body[:180].strip()
 
     def _resolve_supporting_source_pages(self, page: VaultPage) -> list[str]:
         titles: set[str] = set()

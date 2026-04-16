@@ -114,6 +114,7 @@ def build_health_report(
     resolved_root = root.resolve()
     connector = ObsidianConnector(root.resolve())
     vault = connector.inspect()
+    unanchored_source_notes = connector.source_pages_without_topic_anchors()
     readiness_issues, graph_issues = _split_structural_issues(vault.issues)
     if content_issues is None:
         content_issues = audit_vault_content(resolved_root)
@@ -190,6 +191,7 @@ def build_health_report(
             "thin_pages": len(vault.thin_pages),
             "raw_files_without_source_notes": len(vault.raw_files_without_source_notes),
             "source_pages_without_raw_links": len(vault.source_pages_without_raw_links),
+            "source_notes_without_topic_anchors": len(unanchored_source_notes),
             "needs_document_review": sum(
                 1
                 for page in vault.pages

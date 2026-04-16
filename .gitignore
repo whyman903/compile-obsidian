@@ -8,3 +8,17 @@ __pycache__/
 .env.*
 data/
 .playwright-cli/
+
+# Swift / app build artifacts
+.build/
+dist/
+.swiftpm/
+
+# Xcode local state
+DerivedData/
+*.xcuserstate
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# Keep SwiftPM dependency resolution pinned for the app target.
+!MyWiki/Package.resolved

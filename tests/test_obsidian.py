@@ -679,3 +679,32 @@ def test_search_terms_preserves_content_words() -> None:
 
     terms = _search_terms("matplotlib compile render chart debugging")
     assert terms == ["matplotlib", "compile", "render", "chart", "debugging"]
+
+
+def test_search_reuses_cached_page_metadata(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import compile.obsidian as obsidian
+
+    init_workspace(tmp_path, "Test Topic", "Connector coverage.")
+    _write_page(
+        tmp_path / "wiki" / "concepts" / "planner-executor-architecture.md",
+        "Planner-Executor Architecture",
+        "concept",
+        "Planner executor systems depend on tool-first search and reliable retrieval.",
+    )
+
+    connector = ObsidianConnector(tmp_path)
+    connector.scan()
+
+    real_search_terms = obsidian._search_terms
+    calls: list[str] = []
+
+    def counting_search_terms(value: str) -> list[str]:
+        calls.append(value)
+        return real_search_terms(value)
+
+    monkeypatch.setattr(obsidian, "_search_terms", counting_search_terms)
+
+    hits = connector.search("planner executor", limit=3)
+
+    assert hits
+    assert calls == ["planner executor"]

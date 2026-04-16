@@ -425,7 +425,9 @@ Prefer `article` / `map` for new generic workspaces unless this topic truly bene
 
 ## Topic-Specific Priorities
 
-- Main recurring ideas to track:
+- Broad topic hubs to maintain:
+  - fill this in for the workspace
+- Recurring subtopics to group under those hubs:
   - fill this in for the workspace
 - Important entities / actors / artifacts:
   - fill this in for the workspace
@@ -433,6 +435,10 @@ Prefer `article` / `map` for new generic workspaces unless this topic truly bene
   - fill this in for the workspace
 - Important evidence types or provenance standards:
   - fill this in for the workspace
+
+Fill these in with real editorial priorities. Use them to decide when a source should connect to an existing
+article or map page, and when a new lightweight map page is justified because the wiki has a broad topic with
+no navigational hub yet.
 
 ## Saved Outputs
 

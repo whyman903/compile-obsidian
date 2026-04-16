@@ -60,10 +60,142 @@ class TestStatusCommand:
     def test_status(self, tmp_path: Path) -> None:
         init_workspace(tmp_path, "Test Wiki", "Description")
         runner = CliRunner()
-        result = runner.invoke(main, ["status"], catch_exceptions=False)
-        # Runs from CWD; since we can't chdir, test with path option if available
-        # For now, just test it doesn't crash on a real workspace
-        # The status command uses _load_workspace which uses CWD
+        result = runner.invoke(main, ["status", "--path", str(tmp_path)], catch_exceptions=False)
+        assert result.exit_code == 0
+        assert "Test Wiki" in result.output
+        assert "Description" in result.output
+
+
+class TestMachineReadableCommands:
+    def test_init_json_success(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+        result = runner.invoke(main, ["init", "My Wiki", "--path", str(tmp_path), "--json-output"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["ok"] is True
+        assert payload["workspace"]["topic"] == "My Wiki"
+        assert payload["workspace"]["path"] == str(tmp_path)
+
+    def test_init_json_failure(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Existing")
+        runner = CliRunner()
+
+        result = runner.invoke(main, ["init", "My Wiki", "--path", str(tmp_path), "--json-output"])
+
+        assert result.exit_code != 0
+        payload = json.loads(result.output)
+        assert payload["ok"] is False
+        assert "already exists" in payload["error"]
+
+    def test_status_json_success(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test Wiki", "Description")
+        runner = CliRunner()
+
+        result = runner.invoke(main, ["status", "--path", str(tmp_path), "--json-output"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["ok"] is True
+        assert payload["workspace"]["topic"] == "Test Wiki"
+        assert payload["workspace"]["description"] == "Description"
+        assert payload["workspace"]["wikiPageCount"] >= 3
+
+    def test_status_json_failure(self, tmp_path: Path) -> None:
+        runner = CliRunner()
+
+        result = runner.invoke(main, ["status", "--path", str(tmp_path), "--json-output"])
+
+        assert result.exit_code != 0
+        payload = json.loads(result.output)
+        assert payload["ok"] is False
+        assert "No workspace found" in payload["error"]
+
+    def test_ingest_json_stream_local_file(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        raw_file = tmp_path / "raw" / "article.md"
+        raw_file.write_text("# My Article\n\nImportant findings about the topic.")
+        runner = CliRunner()
+
+        result = runner.invoke(
+            main,
+            ["ingest", "article.md", "--path", str(tmp_path), "--json-stream"],
+        )
+
+        assert result.exit_code == 0
+        events = [json.loads(line) for line in result.output.splitlines() if line.strip()]
+        assert [event["event"] for event in events] == [
+            "started",
+            "extracting",
+            "source_note_written",
+            "navigation_refreshed",
+            "completed",
+        ]
+        assert events[-1]["note_path"] == "wiki/sources/My Article.md"
+        assert "links_added" not in events[-1]
+
+    def test_ingest_json_stream_url_emits_fetched(self, tmp_path: Path, monkeypatch) -> None:
+        init_workspace(tmp_path, "Test")
+        fetched = tmp_path / "raw" / "fetched.md"
+        fetched.write_text("# Example\n\nFetched content.")
+
+        def fake_fetch_url(url: str, raw_dir: Path, *, download_images: bool = False) -> tuple[Path, str]:
+            assert url == "https://example.com/report"
+            assert raw_dir == tmp_path / "raw"
+            return fetched, "Fetched Title"
+
+        monkeypatch.setattr("compile.cli.fetch_url", fake_fetch_url)
+        runner = CliRunner()
+
+        result = runner.invoke(
+            main,
+            ["ingest", "https://example.com/report", "--path", str(tmp_path), "--json-stream"],
+        )
+
+        assert result.exit_code == 0
+        events = [json.loads(line) for line in result.output.splitlines() if line.strip()]
+        assert events[1]["event"] == "fetched"
+        assert events[1]["raw_path"] == "raw/fetched.md"
+
+    def test_ingest_json_stream_preserved(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        raw_file = tmp_path / "raw" / "paper.md"
+        raw_file.write_text("# Paper\n\nFresh content.")
+        source_path = tmp_path / "wiki" / "sources" / "Paper.md"
+        source_path.write_text(
+            "---\n"
+            "title: Paper\n"
+            "type: source\n"
+            "status: stable\n"
+            "summary: Existing enriched note.\n"
+            "sources:\n"
+            "- raw/paper.md\n"
+            "---\n\n"
+            "# Paper\n\n"
+            "## Synopsis\n\n"
+            "Existing enriched content.\n\n"
+            "## Provenance\n\n"
+            "- Source file: ![[raw/paper.md]]\n"
+        )
+        runner = CliRunner()
+
+        result = runner.invoke(main, ["ingest", "paper.md", "--path", str(tmp_path), "--json-stream"])
+
+        assert result.exit_code == 0
+        events = [json.loads(line) for line in result.output.splitlines() if line.strip()]
+        assert events[-1]["event"] == "preserved"
+        assert events[-1]["note_path"] == "wiki/sources/Paper.md"
+
+    def test_ingest_json_stream_failure(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        runner = CliRunner()
+
+        result = runner.invoke(main, ["ingest", "missing.md", "--path", str(tmp_path), "--json-stream"])
+
+        assert result.exit_code != 0
+        events = [json.loads(line) for line in result.output.splitlines() if line.strip()]
+        assert events[-1]["event"] == "failed"
+        assert "Raw source not found" in events[-1]["message"]
 
 
 class TestSchemaCommand:
@@ -256,6 +388,23 @@ class TestIngestCommand:
         # Pass relative path under raw/
         result = runner.invoke(main, ["ingest", "raw/nested/deep.md", "--path", str(tmp_path)])
         assert result.exit_code == 0
+
+    def test_ingest_absolute_path_resolves_symlinks(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        raw_file = tmp_path / "raw" / "sample.md"
+        raw_file.write_text("# Sample\n\nSymlink case.")
+
+        link_root = tmp_path.parent / f"{tmp_path.name}-link"
+        link_root.symlink_to(tmp_path, target_is_directory=True)
+        try:
+            linked_source = link_root / "raw" / "sample.md"
+            assert linked_source.exists()
+
+            runner = CliRunner()
+            result = runner.invoke(main, ["ingest", str(linked_source), "--path", str(tmp_path)])
+            assert result.exit_code == 0, result.output
+        finally:
+            link_root.unlink()
 
     def test_ingest_pdf(self, tmp_path: Path) -> None:
         init_workspace(tmp_path, "Test")
@@ -1156,6 +1305,43 @@ class TestObsidianNeighborsCommand:
         assert "Beta" in result.output
 
 
+class TestObsidianJsonCommands:
+    def test_search_json(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        _write_page(
+            tmp_path / "wiki" / "articles" / "alpha.md",
+            "Alpha",
+            "article",
+            "Links to [[Beta]].",
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["obsidian", "search", "Alpha", "--path", str(tmp_path), "--json-output"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["ok"] is True
+        assert payload["hits"][0]["title"] == "Alpha"
+
+    def test_page_json(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        _write_page(
+            tmp_path / "wiki" / "articles" / "alpha.md",
+            "Alpha",
+            "article",
+            "Links to [[Beta]].",
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["obsidian", "page", "Alpha", "--path", str(tmp_path), "--json-output"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["ok"] is True
+        assert payload["page"]["title"] == "Alpha"
+        assert "Links to [[Beta]]." in payload["page"]["body"]
+
+
 class TestObsidianGraphCommand:
     def test_graph(self, tmp_path: Path) -> None:
         init_workspace(tmp_path, "Test")
@@ -1173,6 +1359,85 @@ class TestObsidianGraphCommand:
 
         assert result.exit_code == 0
         assert "nodes" in result.output or "edges" in result.output
+
+
+class TestSuggestMapsCommand:
+    def test_suggest_maps_reports_existing_map_updates(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        _write_page(
+            tmp_path / "wiki" / "maps" / "evaluation-metrics.md",
+            "Evaluation Metrics",
+            "map",
+            "Tracks evaluation metrics for generated text and code generation.",
+        )
+        _write_page(
+            tmp_path / "wiki" / "sources" / "bertscore.md",
+            "Evaluation Metrics BERTScore",
+            "source",
+            "BERTScore compares generated text using contextual embeddings.\n\nAnother paragraph.",
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["suggest", "maps", "--path", str(tmp_path)])
+
+        assert result.exit_code == 0
+        assert "Suggested map updates" in result.output
+        assert "Evaluation Metrics" in result.output
+        assert "Evaluation Metrics BERTScore" in result.output
+
+    def test_suggest_maps_json_reports_unmatched_unanchored_sources(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        _write_page(
+            tmp_path / "wiki" / "maps" / "evaluation-metrics.md",
+            "Evaluation Metrics",
+            "map",
+            "Tracks evaluation metrics for generated text and code generation.",
+        )
+        _write_page(
+            tmp_path / "wiki" / "sources" / "bertscore.md",
+            "Evaluation Metrics BERTScore",
+            "source",
+            "BERTScore compares generated text using contextual embeddings.\n\nAnother paragraph.",
+        )
+        _write_page(
+            tmp_path / "wiki" / "sources" / "planning.md",
+            "Agentic Planning",
+            "source",
+            "Planning loops coordinate tools and execution.\n\nAnother paragraph.",
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["suggest", "maps", "--path", str(tmp_path), "--json-output"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["ok"] is True
+        assert payload["suggestions"][0]["map_title"] == "Evaluation Metrics"
+        assert payload["suggestions"][0]["source_notes"][0]["title"] == "Evaluation Metrics BERTScore"
+        assert payload["unanchored_sources"][0]["title"] == "Agentic Planning"
+
+    def test_suggest_maps_ignores_source_notes_already_connected_to_article(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        _write_page(
+            tmp_path / "wiki" / "articles" / "topic.md",
+            "Topic",
+            "article",
+            "Topic overview.\n\nAnother paragraph.",
+        )
+        _write_page(
+            tmp_path / "wiki" / "sources" / "source.md",
+            "Connected Source",
+            "source",
+            "Links to [[Topic]].\n\nAnother paragraph.",
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["suggest", "maps", "--path", str(tmp_path), "--json-output"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["suggestions"] == []
+        assert payload["unanchored_sources"] == []
 
 
 class TestObsidianCleanupCommand:

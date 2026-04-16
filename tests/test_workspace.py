@@ -53,6 +53,8 @@ class TestInitWorkspace:
         schema = (tmp_path / "WIKI.md").read_text()
         assert "My Wiki" in schema
         assert "Test description" in schema
+        assert "Broad topic hubs to maintain" in schema
+        assert "Recurring subtopics to group under those hubs" in schema
 
     def test_creates_obsidian_config(self, tmp_path: Path) -> None:
         init_workspace(tmp_path, "My Wiki")

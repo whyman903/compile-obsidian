@@ -124,6 +124,41 @@ class TestBuildHealthReport:
         assert report["content_health"]["status"] == "warn"
         assert any(issue["code"] == "needs_document_review" for issue in report["issues"])
 
+    def test_source_without_topic_anchor_surfaces_in_health(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        _write_page(
+            tmp_path / "wiki" / "sources" / "paper.md",
+            "Paper",
+            "source",
+            "Source summary.\n\nAnother paragraph.",
+            status="seed",
+            summary='"Unanchored source note."',
+        )
+        _refresh_nav(tmp_path)
+
+        report = build_health_report(tmp_path)
+
+        assert report["metrics"]["source_notes_without_topic_anchors"] == 1
+        assert any(issue["code"] == "source_without_topic_anchor" for issue in report["issues"])
+
+    def test_many_unanchored_sources_raise_topic_hub_gap_issue(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        for index in range(5):
+            _write_page(
+                tmp_path / "wiki" / "sources" / f"source-{index}.md",
+                f"Source {index}",
+                "source",
+                "Unanchored source summary.\n\nAnother paragraph.",
+                status="seed",
+                summary='"Unanchored source note."',
+            )
+        _refresh_nav(tmp_path)
+
+        report = build_health_report(tmp_path)
+
+        assert report["content_health"]["status"] == "warn"
+        assert any(issue["code"] == "topic_hub_coverage_gap" for issue in report["issues"])
+
 
 class TestWriteHealthSnapshot:
     def test_writes_file(self, tmp_path: Path) -> None:
