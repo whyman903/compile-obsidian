@@ -48,6 +48,11 @@ if [[ -n "${MYWIKI_DEV_WORKSPACE:-}" ]]; then
   fi
 fi
 
+if [[ -n "${MYWIKI_SKIP_LAUNCH:-}" || -n "${CI:-}" ]]; then
+  echo "Skipping app launch (MYWIKI_SKIP_LAUNCH or CI is set)."
+  exit 0
+fi
+
 echo "Launching MyWiki.app..."
 pkill -f "$APP_BUNDLE/Contents/MacOS/MyWiki" >/dev/null 2>&1 || true
 open "$APP_BUNDLE"
