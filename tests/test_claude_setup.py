@@ -43,12 +43,23 @@ def test_fresh_install(tmp_path: Path) -> None:
         assert "{{wiki_path}}" not in content
         assert "wiki-enrich" not in content
 
-    wiki_query = (home / ".claude" / "commands" / "wiki-query.md").read_text()
-    assert "markdown is the fallback" not in wiki_query
-    assert "--nodes-file" in wiki_query
-    assert "--script-file" in wiki_query
-    assert "Want me to save this as a wiki output page?" in wiki_query
-    assert "Only save it if the user says yes" in wiki_query
+    query = (home / ".claude" / "commands" / "query.md").read_text()
+    assert "markdown is the fallback" not in query
+    assert "First try the current working directory" in query
+    assert f'cd "{ws}" && compile ...' in query
+    assert "--nodes-file" in query
+    assert "--script-file" in query
+    assert "Want me to save this as a wiki output page?" in query
+    assert "Only save it if the user says yes" in query
+
+    context = (home / ".claude" / "commands" / "context.md").read_text()
+    assert "First try the current working directory" in context
+    assert f'cd "{ws}" && compile ...' in context
+
+    assert not (home / ".claude" / "commands" / "wiki-query.md").exists()
+    assert not (home / ".claude" / "commands" / "wiki-context.md").exists()
+    assert not (ws / ".claude" / "commands" / "query.md").exists()
+    assert not (ws / ".claude" / "commands" / "context.md").exists()
 
     workspace_claude = (ws / "CLAUDE.md").read_text()
     assert "markdown paragraphs are the fallback" in workspace_claude.lower()
@@ -204,17 +215,29 @@ def test_obsolete_managed_files_reported_without_force(tmp_path: Path) -> None:
     old_global = home / ".claude" / "commands"
     old_global.mkdir(parents=True)
     (old_global / "wiki-enrich.md").write_text("old")
+    (old_global / "wiki-query.md").write_text("old")
+    (old_global / "wiki-context.md").write_text("old")
     old_workspace = ws / ".claude" / "commands"
     old_workspace.mkdir(parents=True)
     (old_workspace / "enrich.md").write_text("old")
+    (old_workspace / "query.md").write_text("old")
+    (old_workspace / "context.md").write_text("old")
 
     result = install_claude_files(ws, home, force=False)
 
     assert str(old_global / "wiki-enrich.md") in result["obsolete"]
+    assert str(old_global / "wiki-query.md") in result["obsolete"]
+    assert str(old_global / "wiki-context.md") in result["obsolete"]
     assert str(old_workspace / "enrich.md") in result["obsolete"]
+    assert str(old_workspace / "query.md") in result["obsolete"]
+    assert str(old_workspace / "context.md") in result["obsolete"]
     assert result["removed"] == []
     assert (old_global / "wiki-enrich.md").exists()
+    assert (old_global / "wiki-query.md").exists()
+    assert (old_global / "wiki-context.md").exists()
     assert (old_workspace / "enrich.md").exists()
+    assert (old_workspace / "query.md").exists()
+    assert (old_workspace / "context.md").exists()
 
 
 def test_force_removes_obsolete_managed_files(tmp_path: Path) -> None:
@@ -225,16 +248,28 @@ def test_force_removes_obsolete_managed_files(tmp_path: Path) -> None:
     old_global = home / ".claude" / "commands"
     old_global.mkdir(parents=True)
     (old_global / "wiki-enrich.md").write_text("old")
+    (old_global / "wiki-query.md").write_text("old")
+    (old_global / "wiki-context.md").write_text("old")
     old_workspace = ws / ".claude" / "commands"
     old_workspace.mkdir(parents=True)
     (old_workspace / "enrich.md").write_text("old")
+    (old_workspace / "query.md").write_text("old")
+    (old_workspace / "context.md").write_text("old")
 
     result = install_claude_files(ws, home, force=True)
 
     assert str(old_global / "wiki-enrich.md") in result["removed"]
+    assert str(old_global / "wiki-query.md") in result["removed"]
+    assert str(old_global / "wiki-context.md") in result["removed"]
     assert str(old_workspace / "enrich.md") in result["removed"]
+    assert str(old_workspace / "query.md") in result["removed"]
+    assert str(old_workspace / "context.md") in result["removed"]
     assert not (old_global / "wiki-enrich.md").exists()
+    assert not (old_global / "wiki-query.md").exists()
+    assert not (old_global / "wiki-context.md").exists()
     assert not (old_workspace / "enrich.md").exists()
+    assert not (old_workspace / "query.md").exists()
+    assert not (old_workspace / "context.md").exists()
 
 
 def test_no_obsolete_templates_installed(tmp_path: Path) -> None:
@@ -247,7 +282,11 @@ def test_no_obsolete_templates_installed(tmp_path: Path) -> None:
     assert not (home / ".claude" / "commands" / "wiki-visualize.md").exists()
     assert not (ws / ".claude" / "commands" / "visualize.md").exists()
     assert not (home / ".claude" / "commands" / "wiki-enrich.md").exists()
+    assert not (home / ".claude" / "commands" / "wiki-query.md").exists()
+    assert not (home / ".claude" / "commands" / "wiki-context.md").exists()
     assert not (ws / ".claude" / "commands" / "enrich.md").exists()
+    assert not (ws / ".claude" / "commands" / "query.md").exists()
+    assert not (ws / ".claude" / "commands" / "context.md").exists()
 
 
 def test_ingest_template_matches_simplified_workflow(tmp_path: Path) -> None:
@@ -268,8 +307,14 @@ def test_ingest_template_matches_simplified_workflow(tmp_path: Path) -> None:
     # Two-phase structure: enrichment and wiring are explicit.
     assert "Phase A" in ingest_content
     assert "Phase B" in ingest_content
-    assert "## Themes" in ingest_content
-    assert "## Key Claims" in ingest_content
+    # Phase A requires anchor existence checks before wikilinks are committed.
+    assert "Before you commit any `[[wikilink]]`" in ingest_content
+    assert "3-source bar" in ingest_content
+    # Visible scaffolding (headed sections, gap callouts, disagreement callouts) is removed.
+    assert "Do not add `## Themes`, `## Key Claims`, or `## Caveats`" in ingest_content
+    assert "do not use `> [!warning] Disagreement` callouts" in ingest_content
+    assert "do not add a `> [!note]` callout" in ingest_content
+    assert "single-source map" in ingest_content
     assert "compile obsidian neighbors" in ingest_content
     assert "direct edits during `/ingest` are limited to the source note plus 1–3 theme anchors" in ingest_content
     assert "do not run multiple `compile ingest` commands in parallel" in ingest_content
@@ -284,7 +329,12 @@ def test_claude_md_has_status_discipline_and_synthesis_guidance(tmp_path: Path) 
     assert "Status Discipline" in claude_md
     assert "What Good Synthesis Looks Like" in claude_md
     assert "Surface disagreement" in claude_md
-    assert "> [!warning] Disagreement" in claude_md
+    # Disagreements are written as plain prose, not [!warning] callouts.
+    assert "Do not use `> [!warning] Disagreement` callouts" in claude_md
+    # Maps must cover a coherent cluster, not a miscellaneous bucket.
+    assert "miscellaneous" in claude_md
+    # Substantive --body-file rewrites auto-clear review_status.
+    assert "automatically clears `review_status: needs_document_review`" in claude_md
     # Two-phase ingest structure lives in the contract.
     assert "Phase A" in claude_md
     assert "Phase B" in claude_md
@@ -320,12 +370,12 @@ def test_synthesize_command_is_installed(tmp_path: Path) -> None:
     assert "source-to-article ratio" not in content
 
 
-def test_query_template_hides_upsert_behind_output_save_intent(tmp_path: Path) -> None:
+def test_global_query_template_hides_upsert_behind_output_save_intent(tmp_path: Path) -> None:
     ws = _make_workspace(tmp_path)
     home = tmp_path / "home"
     home.mkdir()
     install_claude_files(ws, home, force=False)
-    query_content = (ws / ".claude" / "commands" / "query.md").read_text()
+    query_content = (home / ".claude" / "commands" / "query.md").read_text()
     assert "save it as an `output` page using the low-level page writer" in query_content
 
 

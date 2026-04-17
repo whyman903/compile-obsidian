@@ -12,6 +12,7 @@ from compile.text import (
     is_supported,
     is_url,
     normalize_text,
+    sanitize_raw_filename,
     slugify,
 )
 
@@ -56,6 +57,29 @@ class TestSlugify:
 
     def test_leading_trailing_hyphens_stripped(self) -> None:
         assert slugify("--hello--") == "hello"
+
+
+class TestSanitizeRawFilename:
+    def test_colon_replaced(self) -> None:
+        assert sanitize_raw_filename("retrospective: april 17.md") == "retrospective-april-17.md"
+
+    def test_wikilink_breakers_replaced(self) -> None:
+        assert sanitize_raw_filename("note [draft] #1.md") == "note-draft-1.md"
+
+    def test_forbidden_fs_chars(self) -> None:
+        assert sanitize_raw_filename('weird<>:"\\|?*.md') == "weird.md"
+
+    def test_preserves_extension(self) -> None:
+        assert sanitize_raw_filename("Bad: Name.pdf") == "Bad-Name.pdf"
+
+    def test_empty_stem_falls_back_to_untitled(self) -> None:
+        assert sanitize_raw_filename(":::.md") == "untitled.md"
+
+    def test_trailing_dots_and_spaces_stripped(self) -> None:
+        assert sanitize_raw_filename("name.  .md") == "name.md"
+
+    def test_safe_name_unchanged(self) -> None:
+        assert sanitize_raw_filename("caching-strategy-2026-04-07.md") == "caching-strategy-2026-04-07.md"
 
 
 class TestNormalizeText:

@@ -51,6 +51,24 @@ def slugify(value: str) -> str:
     return normalized or "untitled"
 
 
+UNSAFE_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*#^\[\]]')
+
+
+def sanitize_raw_filename(name: str) -> str:
+    """Return a filename safe for raw/ and Obsidian.
+
+    Strips characters forbidden by common filesystems (``<>:"/\\|?*``) and
+    characters that break Obsidian wikilinks (``# ^ [ ]``). Collapses
+    whitespace and hyphens, trims trailing dots, and preserves the
+    original file extension.
+    """
+    path = Path(name)
+    stem = UNSAFE_FILENAME_CHARS.sub("-", path.stem)
+    stem = re.sub(r"\s+", "-", stem)
+    stem = re.sub(r"-+", "-", stem).strip("-. ")
+    return (stem or "untitled") + path.suffix
+
+
 def normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 

@@ -210,20 +210,14 @@ public final class AppModel {
             // Phase 1: Pre-fetch wiki context
             var wikiContext = ""
             do {
-                await MainActor.run { session.updateStatusDetail("Searching wiki…") }
-                let hits = try await compileRunner.search(query: trimmed, at: workspaceURL, limit: 10)
-                log.log("sendQuery: search returned \(hits.count) hits")
-                if !hits.isEmpty {
-                    await MainActor.run { session.updateStatusDetail("Reading pages…") }
-                    var pages: [WikiPage] = []
-                    for hit in hits {
-                        if let page = try? await compileRunner.page(locator: hit.relativePath, at: workspaceURL) {
-                            pages.append(page)
-                        }
-                    }
-                    wikiContext = Self.assembleWikiContext(pages)
-                    log.log("sendQuery: assembled context from \(pages.count) pages (\(wikiContext.count) chars)")
-                }
+                wikiContext = try await Self.loadWikiContext(
+                    query: trimmed,
+                    workspaceURL: workspaceURL,
+                    runner: compileRunner,
+                    session: session,
+                    logger: log,
+                    logPrefix: "sendQuery"
+                )
             } catch is CancellationError {
                 await MainActor.run { session.cancel() }
                 await MainActor.run { [weak self] in self?.activeQueryTask = nil }
@@ -258,9 +252,7 @@ public final class AppModel {
                 )
                 await MainActor.run { [weak self] in
                     log.log("sendQuery: runQuery returned — status=\(session.status), text=\(session.assistantText.count) chars")
-                    if session.status == .running {
-                        session.fail("Query completed without a response")
-                    }
+                    Self.finishCompletedClaudeRunIfNeeded(session, logger: log, context: "sendQuery")
                     self?.saveCurrentSession()
                 }
             } catch is CancellationError {
@@ -318,18 +310,14 @@ public final class AppModel {
 
             var wikiContext = ""
             do {
-                await MainActor.run { session.updateStatusDetail("Searching wiki…") }
-                let hits = try await compileRunner.search(query: trimmed, at: workspaceURL, limit: 10)
-                if !hits.isEmpty {
-                    await MainActor.run { session.updateStatusDetail("Reading pages…") }
-                    var pages: [WikiPage] = []
-                    for hit in hits {
-                        if let page = try? await compileRunner.page(locator: hit.relativePath, at: workspaceURL) {
-                            pages.append(page)
-                        }
-                    }
-                    wikiContext = Self.assembleWikiContext(pages)
-                }
+                wikiContext = try await Self.loadWikiContext(
+                    query: trimmed,
+                    workspaceURL: workspaceURL,
+                    runner: compileRunner,
+                    session: session,
+                    logger: log,
+                    logPrefix: "sendFollowUp"
+                )
             } catch is CancellationError {
                 await MainActor.run { session.cancel() }
                 await MainActor.run { [weak self] in self?.activeQueryTask = nil }
@@ -357,9 +345,7 @@ public final class AppModel {
                     }
                 )
                 await MainActor.run { [weak self] in
-                    if session.status == .running {
-                        session.fail("Query completed without a response")
-                    }
+                    Self.finishCompletedClaudeRunIfNeeded(session, logger: log, context: "sendFollowUp")
                     self?.saveCurrentSession()
                 }
             } catch is CancellationError {
@@ -411,6 +397,26 @@ public final class AppModel {
         queryHistory.insert(record, at: 0)
         queryHistory = normalizedHistory(queryHistory)
         saveHistory()
+    }
+
+    private static func finishCompletedClaudeRunIfNeeded(
+        _ session: QuerySession,
+        logger: AppLogger,
+        context: String
+    ) {
+        guard session.status == .running else { return }
+        let trimmed = session.assistantText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty {
+            logger.log("\(context): Claude exited without a result event; completing from streamed assistant text")
+            session.handle(.finished(
+                text: session.assistantText,
+                costUSD: nil,
+                durationMs: nil,
+                permissionDenials: []
+            ))
+            return
+        }
+        session.fail("Query completed without a response")
     }
 
     private func normalizedHistory(_ records: [QueryHistoryRecord]) -> [QueryHistoryRecord] {
@@ -630,6 +636,19 @@ public final class AppModel {
         NSWorkspace.shared.activateFileViewerSelecting([workspace.url])
     }
 
+    public func revealClaudeCommandsInFinder() {
+        guard let workspace else {
+            return
+        }
+        let commandsURL = workspace.url
+            .appending(path: ".claude/commands", directoryHint: .isDirectory)
+        guard fileManager.fileExists(atPath: commandsURL.path) else {
+            lastError = "No .claude/commands directory. Run `compile claude setup` on this workspace first."
+            return
+        }
+        NSWorkspace.shared.activateFileViewerSelecting([commandsURL])
+    }
+
     public func openFeedItem(_ item: FeedItem) {
         guard let workspace, let relativePath = item.stagedRelativePath else {
             return
@@ -741,19 +760,114 @@ public final class AppModel {
             .appending(path: "wiki", directoryHint: .isDirectory)
     }
 
+    private static let querySearchLimit = 10
+    private static let querySourceExpansionLimit = 8
+    private static let regularPageContextCharacterLimit = 8_000
+
+    private static func loadWikiContext(
+        query: String,
+        workspaceURL: URL,
+        runner: CompileRunning,
+        session: QuerySession,
+        logger: AppLogger,
+        logPrefix: String
+    ) async throws -> String {
+        await MainActor.run { session.updateStatusDetail("Searching wiki…") }
+        let hits = try await runner.search(query: query, at: workspaceURL, limit: Self.querySearchLimit)
+        logger.log("\(logPrefix): search returned \(hits.count) hits")
+        guard !hits.isEmpty else { return "" }
+
+        await MainActor.run { session.updateStatusDetail("Reading pages…") }
+        var pages: [WikiPage] = []
+        var seenPaths: Set<String> = []
+        var expandedSourceCount = 0
+
+        func appendPage(_ page: WikiPage) {
+            guard !seenPaths.contains(page.relativePath) else { return }
+            seenPaths.insert(page.relativePath)
+            pages.append(page)
+        }
+
+        for hit in hits {
+            guard let page = try? await runner.page(locator: hit.relativePath, at: workspaceURL) else {
+                continue
+            }
+            appendPage(page)
+
+            guard page.pageType.lowercased() != "source",
+                  expandedSourceCount < Self.querySourceExpansionLimit else {
+                continue
+            }
+
+            let neighborhood: WikiNeighborhood
+            do {
+                neighborhood = try await runner.neighbors(locator: page.relativePath, at: workspaceURL)
+            } catch {
+                logger.log("\(logPrefix): neighbors failed for \(page.relativePath): \(error)")
+                continue
+            }
+
+            let sourceLocators = orderedUnique(
+                neighborhood.supportingSourcePages + neighborhood.citedSourcePages
+            )
+            guard !sourceLocators.isEmpty else { continue }
+
+            await MainActor.run { session.updateStatusDetail("Reading source notes…") }
+            for locator in sourceLocators {
+                guard expandedSourceCount < Self.querySourceExpansionLimit else { break }
+                guard let sourcePage = try? await runner.page(locator: locator, at: workspaceURL) else {
+                    continue
+                }
+                guard sourcePage.pageType.lowercased() == "source" else { continue }
+                let beforeCount = pages.count
+                appendPage(sourcePage)
+                if pages.count > beforeCount {
+                    expandedSourceCount += 1
+                }
+            }
+        }
+
+        let context = Self.assembleWikiContext(pages)
+        logger.log(
+            "\(logPrefix): assembled context from \(pages.count) pages " +
+            "(\(expandedSourceCount) expanded sources, \(context.count) chars)"
+        )
+        return context
+    }
+
+    private static func orderedUnique(_ values: [String]) -> [String] {
+        var seen: Set<String> = []
+        var result: [String] = []
+        for value in values {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { continue }
+            let key = trimmed.lowercased()
+            guard !seen.contains(key) else { continue }
+            seen.insert(key)
+            result.append(trimmed)
+        }
+        return result
+    }
+
     private static func assembleWikiContext(_ pages: [WikiPage]) -> String {
         guard !pages.isEmpty else { return "" }
         var sections: [String] = []
         for page in pages {
             var section = "## \(page.title)"
+            section += "\nPath: \(page.relativePath)"
+            section += "\nType: \(page.pageType)"
             if let summary = page.summary, !summary.isEmpty {
-                section += "\n\(summary)"
+                section += "\nSummary: \(summary)"
             }
             if let body = page.body, !body.isEmpty {
-                let truncated = String(body.prefix(5000))
-                section += "\n\n\(truncated)"
-                if body.count > 5000 {
-                    section += "\n[truncated]"
+                if page.pageType.lowercased() == "source" {
+                    section += "\n\n\(body)"
+                } else {
+                    let truncated = String(body.prefix(Self.regularPageContextCharacterLimit))
+                    section += "\n\n\(truncated)"
+                    if body.count > Self.regularPageContextCharacterLimit {
+                        section += "\n[truncated after \(Self.regularPageContextCharacterLimit) characters]"
+                    }
                 }
             }
             sections.append(section)

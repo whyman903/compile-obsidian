@@ -35,7 +35,7 @@ from compile.search_index import (
     sync_pdf_search_index,
 )
 from compile.suggest import suggest_map_updates
-from compile.text import extract_source, is_url, title_from_path
+from compile.text import extract_source, is_url, sanitize_raw_filename, title_from_path
 from compile.workspace import (
     append_log_entry,
     collect_pages_by_type,
@@ -48,8 +48,8 @@ from compile.workspace import (
 )
 
 console = Console()
-OBSOLETE_GLOBAL_COMMANDS = ("wiki-enrich.md",)
-OBSOLETE_WORKSPACE_COMMANDS = ("enrich.md",)
+OBSOLETE_GLOBAL_COMMANDS = ("wiki-enrich.md", "wiki-query.md", "wiki-context.md")
+OBSOLETE_WORKSPACE_COMMANDS = ("enrich.md", "query.md", "context.md")
 IngestEventCallback = Callable[[dict[str, Any]], None]
 
 
@@ -549,6 +549,30 @@ def ingest(source: str, path: str, title: str | None, images: bool, json_stream:
             console.print("[red]Source files must be in the raw/ directory.[/red]")
             console.print(f"  Move the file to {config.raw_dir} and retry.")
             raise SystemExit(1)
+        safe_name = sanitize_raw_filename(raw_path.name)
+        if safe_name != raw_path.name:
+            target = raw_path.with_name(safe_name)
+            counter = 2
+            while target.exists() and target.resolve() != raw_path.resolve():
+                target = raw_path.with_name(f"{Path(safe_name).stem}-{counter}{Path(safe_name).suffix}")
+                counter += 1
+            raw_path.rename(target)
+            raw_path = target
+            renamed_relative = str(raw_path.relative_to(config.workspace_root)).replace("\\", "/")
+            if json_stream:
+                emit_event(
+                    {
+                        "event": "renamed",
+                        "id": job_id,
+                        "source": source,
+                        "raw_path": renamed_relative,
+                        "message": f"Renamed raw source to remove unsafe characters: {raw_path.name}",
+                    }
+                )
+            else:
+                console.print(
+                    f"[yellow]Renamed raw source → [/yellow]{renamed_relative}"
+                )
     try:
         result = _ingest_raw_source(
             config,
@@ -764,14 +788,22 @@ def obsidian_page(locator: str, path: str, json_output: bool) -> None:
 @obsidian.command("neighbors")
 @click.argument("locator")
 @click.option("--path", "-p", default=".")
-def obsidian_neighbors(locator: str, path: str) -> None:
+@click.option("--json-output/--no-json-output", default=False)
+def obsidian_neighbors(locator: str, path: str, json_output: bool) -> None:
     """Show page connections."""
     connector = ObsidianConnector(Path(path).resolve())
     try:
         n = connector.get_neighborhood(locator)
     except (FileNotFoundError, ValueError) as e:
+        if json_output:
+            _emit_machine_error(str(e), context="obsidian_neighbors")
+            raise SystemExit(1)
         console.print(f"[red]{e}[/red]")
         raise SystemExit(1)
+
+    if json_output:
+        _emit_json({"ok": True, "neighborhood": n.to_dict()})
+        return
 
     console.print(f"\n[bold]{n.page.title}[/bold]")
     for label, items in [
@@ -844,6 +876,14 @@ def obsidian_refresh(path: str) -> None:
     default=None,
     help="Set the page status (seed, emerging, stable). Overrides the existing frontmatter value.",
 )
+@click.option(
+    "--clear-review-status/--keep-review-status",
+    default=None,
+    help=(
+        "Clear or preserve the review_status frontmatter flag. "
+        "Default: clear it automatically when --body-file supplies a substantive non-shell rewrite."
+    ),
+)
 @click.option("--relative-path", default=None, help="Optional target path relative to the vault root.")
 @click.option("--tag", "tags", multiple=True, help="Repeat to add tags.")
 @click.option("--source", "sources", multiple=True, help="Repeat to add supporting sources.")
@@ -856,6 +896,7 @@ def obsidian_upsert(
     body_file: Path | None,
     summary: str | None,
     status: str | None,
+    clear_review_status: bool | None,
     relative_path: str | None,
     tags: tuple[str, ...],
     sources: tuple[str, ...],
@@ -907,6 +948,31 @@ def obsidian_upsert(
         and "This is a registration shell." in existing.body
     )
 
+    extra_frontmatter: dict[str, Any] = {}
+    if status:
+        extra_frontmatter["status"] = status
+
+    existing_review_flag = (
+        str(existing.frontmatter.get("review_status") or "").strip()
+        if existing is not None
+        else ""
+    )
+    body_is_substantive_rewrite = (
+        body_file is not None
+        and "This is a registration shell." not in body_text
+        and len(body_text.strip()) >= 500
+    )
+    should_clear_review = (
+        clear_review_status is True
+        or (
+            clear_review_status is None
+            and existing_review_flag == "needs_document_review"
+            and body_is_substantive_rewrite
+        )
+    )
+    if should_clear_review and existing_review_flag:
+        extra_frontmatter["review_status"] = None
+
     page = connector.upsert_page(
         title=title,
         body=body_text,
@@ -916,7 +982,7 @@ def obsidian_upsert(
         aliases=list(aliases),
         summary=summary,
         relative_path=relative_path,
-        extra_frontmatter={"status": status} if status else None,
+        extra_frontmatter=extra_frontmatter or None,
     )
 
     # When a registration shell is replaced with real content, mark raw sources processed.
@@ -1276,7 +1342,7 @@ def claude_setup(path: str, force: bool) -> None:
 
     PATH is the wiki workspace directory (default: current directory).
 
-    Installs global bridge commands (~/.claude/commands/) so the wiki is
+    Installs context-aware global commands (~/.claude/commands/) so the wiki is
     accessible from any Claude Code session, and workspace-local commands
     so the wiki itself has the full editing toolset.
     """
@@ -1341,7 +1407,7 @@ def install_claude_files(
     obsolete: list[str] = []
     removed: list[str] = []
 
-    # --- Global bridge commands ---
+    # --- Context-aware global commands ---
     global_dir = home / ".claude" / "commands"
     global_dir.mkdir(parents=True, exist_ok=True)
 

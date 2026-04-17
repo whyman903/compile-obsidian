@@ -239,7 +239,6 @@ def write_overview(config: Config, pages_by_type: dict[str, list[dict[str, str]]
 ## Navigation
 
 - [[Index]] — full catalog
-- [[Log]] — chronology
 """
     (config.wiki_dir / "overview.md").write_text(content)
 

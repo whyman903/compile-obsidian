@@ -110,13 +110,19 @@ def test_obsidian_connector_search_and_neighbors(tmp_path: Path) -> None:
         tmp_path / "wiki" / "concepts" / "planner-executor-architecture.md",
         "Planner-Executor Architecture",
         "concept",
-        "Systematic debugging with [[Tool-First Architecture]].",
+        "Systematic debugging with [[Tool-First Architecture]] and [[Source A]].",
     )
     _write_page(
         tmp_path / "wiki" / "concepts" / "tool-first-architecture.md",
         "Tool-First Architecture",
         "concept",
         "Grounding comes from tools and logs.",
+    )
+    _write_page(
+        tmp_path / "wiki" / "sources" / "source-a.md",
+        "Source A",
+        "source",
+        "Primary source evidence.",
     )
 
     connector = ObsidianConnector(tmp_path)
@@ -128,6 +134,7 @@ def test_obsidian_connector_search_and_neighbors(tmp_path: Path) -> None:
     assert hits[0].title == "Planner-Executor Architecture"
     assert fuzzy_page.title == "Planner-Executor Architecture"
     assert "Tool-First Architecture" in neighborhood.outbound_pages
+    assert "Source A" in neighborhood.supporting_source_pages
 
     graph = connector.graph()
     assert any(edge.source == "Planner-Executor Architecture" and edge.target == "Tool-First Architecture" for edge in graph.edges)

@@ -442,6 +442,35 @@ class TestIngestCommand:
         result = runner.invoke(main, ["ingest", "raw/nested/deep.md", "--path", str(tmp_path)])
         assert result.exit_code == 0
 
+    def test_ingest_renames_file_with_unsafe_characters(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        bad_name = "retrospective: april 17.md"
+        bad_file = tmp_path / "raw" / bad_name
+        bad_file.write_text("# Retro\n\nSome thoughts.")
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["ingest", bad_name, "--path", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert not bad_file.exists()
+        renamed = tmp_path / "raw" / "retrospective-april-17.md"
+        assert renamed.exists()
+        assert "Renamed raw source" in result.output
+
+    def test_ingest_rename_avoids_collision(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        existing = tmp_path / "raw" / "retrospective-april-17.md"
+        existing.write_text("# Existing\n\n")
+        bad_name = "retrospective: april 17.md"
+        bad_file = tmp_path / "raw" / bad_name
+        bad_file.write_text("# Retro\n\nSome thoughts.")
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["ingest", bad_name, "--path", str(tmp_path)])
+        assert result.exit_code == 0, result.output
+        assert not bad_file.exists()
+        assert existing.exists()  # untouched
+        assert (tmp_path / "raw" / "retrospective-april-17-2.md").exists()
+
     def test_ingest_absolute_path_resolves_symlinks(self, tmp_path: Path) -> None:
         init_workspace(tmp_path, "Test")
         raw_file = tmp_path / "raw" / "sample.md"
@@ -1021,6 +1050,125 @@ class TestIngestCommand:
         assert "review_status: reviewed" in updated
         assert "reviewed_at: 2026-01-01 00:00" in updated
         assert "Updated body." in updated
+
+    def test_obsidian_upsert_body_file_auto_clears_needs_document_review(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        source_path = tmp_path / "wiki" / "sources" / "Paper.md"
+        source_path.write_text(
+            "---\n"
+            "title: Paper\n"
+            "type: source\n"
+            "status: seed\n"
+            "summary: Extracted source note.\n"
+            "sources:\n"
+            "- raw/paper.pdf\n"
+            "review_status: needs_document_review\n"
+            "extraction_method: pymupdf_text\n"
+            "---\n\n"
+            "# Paper\n\n"
+            "Original extracted body.\n"
+        )
+
+        body_file = tmp_path / "rewrite.md"
+        substantive_body = "# Paper\n\n" + ("This is a substantive human-grade rewrite of the paper. " * 20)
+        body_file.write_text(substantive_body)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            [
+                "obsidian",
+                "upsert",
+                "Paper",
+                "--path",
+                str(tmp_path),
+                "--page-type",
+                "source",
+                "--body-file",
+                str(body_file),
+            ],
+        )
+
+        assert result.exit_code == 0
+        updated = source_path.read_text()
+        assert "review_status:" not in updated
+        assert "extraction_method: pymupdf_text" in updated
+        assert "substantive human-grade rewrite" in updated
+
+    def test_obsidian_upsert_body_file_keeps_review_status_with_keep_flag(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        source_path = tmp_path / "wiki" / "sources" / "Paper.md"
+        source_path.write_text(
+            "---\n"
+            "title: Paper\n"
+            "type: source\n"
+            "status: seed\n"
+            "summary: Extracted source note.\n"
+            "review_status: needs_document_review\n"
+            "---\n\n"
+            "# Paper\n\n"
+            "Original extracted body.\n"
+        )
+
+        body_file = tmp_path / "rewrite.md"
+        substantive_body = "# Paper\n\n" + ("This is a substantive human-grade rewrite of the paper. " * 20)
+        body_file.write_text(substantive_body)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            [
+                "obsidian",
+                "upsert",
+                "Paper",
+                "--path",
+                str(tmp_path),
+                "--page-type",
+                "source",
+                "--body-file",
+                str(body_file),
+                "--keep-review-status",
+            ],
+        )
+
+        assert result.exit_code == 0
+        updated = source_path.read_text()
+        assert "review_status: needs_document_review" in updated
+
+    def test_obsidian_upsert_clear_review_status_flag_clears_without_body_file(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        source_path = tmp_path / "wiki" / "sources" / "Paper.md"
+        source_path.write_text(
+            "---\n"
+            "title: Paper\n"
+            "type: source\n"
+            "status: stable\n"
+            "summary: Extracted source note.\n"
+            "review_status: needs_document_review\n"
+            "---\n\n"
+            "# Paper\n\n"
+            "Body that should be preserved.\n"
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            [
+                "obsidian",
+                "upsert",
+                "Paper",
+                "--path",
+                str(tmp_path),
+                "--page-type",
+                "source",
+                "--clear-review-status",
+            ],
+        )
+
+        assert result.exit_code == 0
+        updated = source_path.read_text()
+        assert "review_status:" not in updated
+        assert "Body that should be preserved." in updated
 
 
 class TestRemovedSourceCommand:
@@ -1628,6 +1776,30 @@ class TestObsidianJsonCommands:
         assert payload["ok"] is True
         assert payload["page"]["title"] == "Alpha"
         assert "Links to [[Beta]]." in payload["page"]["body"]
+
+    def test_neighbors_json(self, tmp_path: Path) -> None:
+        init_workspace(tmp_path, "Test")
+        _write_page(
+            tmp_path / "wiki" / "articles" / "alpha.md",
+            "Alpha",
+            "article",
+            "Links to [[Source A]].",
+        )
+        _write_page(
+            tmp_path / "wiki" / "sources" / "source-a.md",
+            "Source A",
+            "source",
+            "Primary source evidence.",
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(main, ["obsidian", "neighbors", "Alpha", "--path", str(tmp_path), "--json-output"])
+
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["ok"] is True
+        assert payload["neighborhood"]["page"]["title"] == "Alpha"
+        assert payload["neighborhood"]["supporting_source_pages"] == ["Source A"]
 
 
 class TestObsidianGraphCommand:

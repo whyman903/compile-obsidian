@@ -35,6 +35,12 @@ private struct PageEnvelope: CommandEnvelope {
     let error: String?
 }
 
+private struct NeighborhoodEnvelope: CommandEnvelope {
+    let ok: Bool
+    let neighborhood: WikiNeighborhood?
+    let error: String?
+}
+
 private struct ByteTailBuffer {
     private let limit: Int
     private var buffer = Data()
@@ -100,6 +106,16 @@ public final class CompileRunner: CompileRunning, @unchecked Sendable {
             throw CompileCommandError("Sidecar returned no page payload.")
         }
         return page
+    }
+
+    public func neighbors(locator: String, at path: URL) async throws -> WikiNeighborhood {
+        let envelope: NeighborhoodEnvelope = try await runEnvelopeCommand(
+            arguments: ["obsidian", "neighbors", locator, "--path", path.path, "--json-output"]
+        )
+        guard let neighborhood = envelope.neighborhood else {
+            throw CompileCommandError("Sidecar returned no neighborhood payload.")
+        }
+        return neighborhood
     }
 
     public func ingest(

@@ -752,6 +752,7 @@ private struct QueryResponseView: View {
                 .foregroundStyle(EditorialPalette.textPrimary)
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
             Spacer(minLength: 8)
             if session.status == .running {
                 Button(action: onCancel) {
@@ -797,13 +798,10 @@ private struct QueryResponseView: View {
                     .foregroundStyle(EditorialPalette.textTertiary)
             } else if !session.assistantText.isEmpty {
                 ScrollView {
-                    Text(WikilinkParser.attributedString(session.assistantText))
-                        .font(.system(size: 14, design: activeFont.design))
-                        .foregroundStyle(EditorialPalette.textPrimary)
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
+                    MarkdownContentView(text: session.assistantText) { target in
+                        onOpenWiki(target)
+                    }
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .lineSpacing(2)
                 }
                 .frame(idealHeight: 120, maxHeight: 280)
                 .fixedSize(horizontal: false, vertical: true)

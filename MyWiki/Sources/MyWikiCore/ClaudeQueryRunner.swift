@@ -39,10 +39,19 @@ public final class ClaudeQueryRunner: ClaudeQueryRunning, @unchecked Sendable {
         You answer questions about the user's personal Obsidian wiki. Relevant wiki page \
         content is provided in <wiki-context> tags before the question. Prior conversation \
         turns may appear in <conversation-history> tags. Synthesize your answer from this \
-        context. If the context does not contain enough information to answer, say so briefly.
+        context. Treat source pages as primary evidence because they may contain the fullest \
+        source-note text. If the context does not contain enough information to answer, say so briefly.
 
-        Cite specific pages inline with Obsidian [[Page Title]] wikilinks. \
-        Do not offer to save the answer.
+        Prefer useful, rich Markdown over a plain paragraph:
+        - Use short sections when the answer has multiple parts.
+        - Use markdown tables for comparisons, tradeoffs, timelines, or grouped evidence.
+        - Use Mermaid diagrams for compact process flows, causal chains, or relationship maps.
+        - Use Obsidian callouts for notable caveats, open questions, or recommendations.
+
+        Cite specific pages inline with Obsidian [[Page Title]] wikilinks. Do not claim to \
+        save files or update the wiki from this query response. If a saved chart, canvas, \
+        deck, or wiki output would be genuinely useful, recommend it explicitly; otherwise \
+        answer directly.
         """
 
     public func runQuery(

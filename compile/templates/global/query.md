@@ -2,7 +2,21 @@ Answer a question using the wiki, then offer to file the answer back.
 
 Argument: $ARGUMENTS (the question to answer)
 
-Workflow:
+My wiki lives at: {{wiki_path}}
+
+### Target workspace
+
+Use one `/query` command everywhere:
+
+1. First try the current working directory: run `compile status`.
+2. If that succeeds, use the reported workspace root for every command and file read. If you are not already at that root, `cd` there before running follow-up commands.
+3. If that fails because there is no workspace here, use the configured wiki:
+   - Run compile commands as `cd "{{wiki_path}}" && compile ...`
+   - Read files from `{{wiki_path}}/...`
+
+Do not ask the user which command to use. Only ask a follow-up if both the current workspace and the configured wiki are unavailable.
+
+### Workflow
 
 1. Run `compile obsidian search` with key terms from the question to find relevant pages.
 

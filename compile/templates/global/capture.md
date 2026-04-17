@@ -7,7 +7,7 @@ My wiki lives at: {{wiki_path}}
 Workflow:
 
 1. Take what the user described (or what just happened in this conversation) and write it as a markdown file into the wiki's raw/ directory:
-   - Filename: descriptive slug with today's date, e.g. `{{wiki_path}}/raw/caching-strategy-2026-04-07.md`
+   - Filename MUST match `<slug>-YYYY-MM-DD.md`, where `<slug>` contains only lowercase letters, digits, and hyphens. Example: `{{wiki_path}}/raw/caching-strategy-2026-04-07.md`. Do NOT include spaces, colons, slashes, quotes, brackets, `#`, `^`, or any other punctuation — these characters break Obsidian filenames and wikilinks. `compile ingest` will rename the file if you slip up, but emit a clean name to begin with.
    - Content: a clear, self-contained note with enough context that it makes sense outside this conversation. Include: what the insight is, where it came from, why it matters.
 
 2. Then run the ingest workflow to register it in the wiki:

@@ -6,6 +6,7 @@ public protocol CompileRunning: AnyObject, Sendable {
     func prepareWorkspaceForClaude(at path: URL, force: Bool) async throws
     func search(query: String, at path: URL, limit: Int) async throws -> [SearchHit]
     func page(locator: String, at path: URL) async throws -> WikiPage
+    func neighbors(locator: String, at path: URL) async throws -> WikiNeighborhood
     func ingest(
         source: String,
         at path: URL,

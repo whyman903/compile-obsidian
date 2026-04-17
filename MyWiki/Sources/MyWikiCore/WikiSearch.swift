@@ -52,6 +52,28 @@ public struct WikiPage: Decodable, Equatable, Sendable {
     }
 }
 
+public struct WikiNeighborhood: Decodable, Equatable, Sendable {
+    public let page: WikiPage
+    public let backlinks: [String]
+    public let outboundPages: [String]
+    public let outboundFiles: [String]
+    public let supportingSourcePages: [String]
+    public let relatedPages: [String]
+    public let citedSourcePages: [String]
+    public let unresolvedTargets: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case page
+        case backlinks
+        case outboundPages = "outbound_pages"
+        case outboundFiles = "outbound_files"
+        case supportingSourcePages = "supporting_source_pages"
+        case relatedPages = "related_pages"
+        case citedSourcePages = "cited_source_pages"
+        case unresolvedTargets = "unresolved_targets"
+    }
+}
+
 public struct ChatMessage: Identifiable, Equatable, Sendable {
     public enum Role: Equatable, Sendable {
         case user

@@ -609,7 +609,7 @@ class ObsidianConnector:
 
     def get_neighborhood(self, locator: str) -> PageNeighborhood:
         page = self.get_page(locator)
-        supporting_source_pages = self._resolve_supporting_source_pages(page)
+        supporting_source_pages = sorted(self.supporting_source_titles(page))
         related_pages = self._resolve_related_pages(page)
         cited_source_pages = self._resolve_cited_source_pages(page)
         return PageNeighborhood(
@@ -754,7 +754,11 @@ class ObsidianConnector:
         elif "aliases" in frontmatter:
             frontmatter.pop("aliases")
         if extra_frontmatter:
-            frontmatter.update(extra_frontmatter)
+            for key, value in extra_frontmatter.items():
+                if value is None:
+                    frontmatter.pop(key, None)
+                else:
+                    frontmatter[key] = value
 
         # Rebuild cssclasses from the final page_type and status so stale maturity
         # or type labels from prior writes don't linger. Preserve any custom

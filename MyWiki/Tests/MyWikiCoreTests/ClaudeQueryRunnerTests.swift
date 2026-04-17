@@ -139,5 +139,9 @@ final class ClaudeQueryRunnerTests: XCTestCase {
 
         XCTAssertTrue(prompt.contains("wiki-context"), "should reference wiki-context tags")
         XCTAssertTrue(prompt.contains("wikilinks"), "should mention wikilink citations")
+        XCTAssertTrue(prompt.contains("source pages"), "should identify source pages as primary evidence")
+        XCTAssertTrue(prompt.contains("markdown tables"), "should encourage rich tabular answers")
+        XCTAssertTrue(prompt.contains("Mermaid"), "should encourage diagram output when useful")
+        XCTAssertTrue(prompt.contains("callouts"), "should encourage Obsidian callouts when useful")
     }
 }

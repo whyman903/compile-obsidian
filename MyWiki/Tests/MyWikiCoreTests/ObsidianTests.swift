@@ -6,12 +6,12 @@ final class ObsidianTests: XCTestCase {
     func testRegistryResolvesExactWorkspaceIdentifier() {
         let registry = ObsidianVaultRegistry(
             vaults: [
-                "alpha1234567890ab": .init(path: "/Users/walker/wiki"),
-                "beta1234567890cd": .init(path: "/Users/walker/wiki/wiki"),
+                "alpha1234567890ab": .init(path: "/Users/example/wiki"),
+                "beta1234567890cd": .init(path: "/Users/example/wiki/wiki"),
             ]
         )
 
-        let workspaceURL = URL(fileURLWithPath: "/Users/walker/wiki")
+        let workspaceURL = URL(fileURLWithPath: "/Users/example/wiki")
 
         XCTAssertEqual(registry.identifier(for: workspaceURL), "alpha1234567890ab")
     }
@@ -19,10 +19,10 @@ final class ObsidianTests: XCTestCase {
     func testOpenVaultURLUsesVaultIdentifierFromRegistry() {
         let registry = ObsidianVaultRegistry(
             vaults: [
-                "abc123def4567890": .init(path: "/Users/walker/wiki"),
+                "abc123def4567890": .init(path: "/Users/example/wiki"),
             ]
         )
-        let workspaceURL = URL(fileURLWithPath: "/Users/walker/wiki")
+        let workspaceURL = URL(fileURLWithPath: "/Users/example/wiki")
 
         let url = ObsidianURLBuilder.openVaultURL(for: workspaceURL, registry: registry)
 
@@ -32,10 +32,10 @@ final class ObsidianTests: XCTestCase {
     func testOpenGraphURLUsesAdvancedURIHostAndCommandID() {
         let registry = ObsidianVaultRegistry(
             vaults: [
-                "abc123def4567890": .init(path: "/Users/walker/wiki"),
+                "abc123def4567890": .init(path: "/Users/example/wiki"),
             ]
         )
-        let workspaceURL = URL(fileURLWithPath: "/Users/walker/wiki")
+        let workspaceURL = URL(fileURLWithPath: "/Users/example/wiki")
 
         let url = ObsidianURLBuilder.openGraphURL(for: workspaceURL, registry: registry)
         let components = url.flatMap { URLComponents(url: $0, resolvingAgainstBaseURL: false) }
@@ -55,13 +55,13 @@ final class ObsidianTests: XCTestCase {
     func testOpenVaultURLReturnsNilWithoutRegistryMatch() {
         let registry = ObsidianVaultRegistry(
             vaults: [
-                "abc123def4567890": .init(path: "/Users/walker/other"),
+                "abc123def4567890": .init(path: "/Users/example/other"),
             ]
         )
 
         XCTAssertNil(
             ObsidianURLBuilder.openVaultURL(
-                for: URL(fileURLWithPath: "/Users/walker/wiki"),
+                for: URL(fileURLWithPath: "/Users/example/wiki"),
                 registry: registry
             )
         )

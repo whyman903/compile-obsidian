@@ -37,6 +37,17 @@ codesign --force --sign - "$APP_BUNDLE/Contents/Resources/compile-bin"
 codesign --force --sign - --deep "$APP_BUNDLE"
 
 echo "Built app bundle at: $APP_BUNDLE"
+
+if [[ -n "${MYWIKI_DEV_WORKSPACE:-}" ]]; then
+  DEV_WORKSPACE="${MYWIKI_DEV_WORKSPACE/#\~/$HOME}"
+  if [[ -d "$DEV_WORKSPACE" ]]; then
+    echo "Syncing Claude templates into $DEV_WORKSPACE..."
+    uv run compile claude setup "$DEV_WORKSPACE" --force
+  else
+    echo "MYWIKI_DEV_WORKSPACE=$DEV_WORKSPACE is not a directory; skipping template sync."
+  fi
+fi
+
 echo "Launching MyWiki.app..."
 pkill -f "$APP_BUNDLE/Contents/MacOS/MyWiki" >/dev/null 2>&1 || true
 open "$APP_BUNDLE"

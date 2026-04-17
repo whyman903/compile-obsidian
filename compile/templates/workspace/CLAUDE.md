@@ -70,7 +70,7 @@ compile obsidian upsert "Title" \
 
 - Search before creating pages. Prefer updating an existing page over spawning a near-duplicate.
 - The slash-command workflows are the primary contract. Keep `compile obsidian upsert` below the fold: use it when a workflow needs to rewrite or retag a page.
-- Prefer `compile obsidian upsert --body-file ...` when a direct page write is necessary.
+- Prefer `compile obsidian upsert --body-file ...` when a direct page write is necessary. A substantive rewrite via `--body-file` automatically clears `review_status: needs_document_review`; pass `--keep-review-status` to opt out, or `--clear-review-status` to force-clear after any write.
 - Run `compile obsidian refresh` after page changes, then `compile health`.
 - Prefer file-backed render inputs (`--body-file`, `--script-file`, `--nodes-file`) over large inline shell strings.
 
@@ -108,25 +108,21 @@ Treat ingest as phased work. Batch independent read-only steps together when hel
 2. Run `compile ingest <filename>` to register the source and create a first-pass source note.
 3. Read the generated source note.
 4. Read the raw source itself when the generated note is weak, incomplete, or needs verification.
-5. When a substantial improvement is warranted, rewrite the source note in place. Use the low-level page writer with `--body-file` for the actual write. When you rewrite, add:
-   - A `## Themes` section listing 1–3 broader themes this source belongs to, each with a `[[wikilink]]` to the existing article or map that covers it (or a plain theme name when no page exists yet).
-   - A `## Key Claims` section naming the main arguments or findings, each with a one-line note on evidence strength (e.g., "strong: cites longitudinal study", "weak: assertion without citation").
+5. When a substantial improvement is warranted, rewrite the source note in place using the low-level page writer with `--body-file`. Before you commit any `[[wikilink]]`: identify 1–3 broader themes for the source, run `compile obsidian search` for each, and apply the 3-source bar from Phase B — only write `[[Theme Anchor]]` when an anchor already exists or you will create one this pass. Otherwise refer to the theme by plain text. Write the body as continuous prose covering the source's main claims with a brief evidence-strength judgment and any material caveats. Do not add `## Themes`, `## Key Claims`, or `## Caveats` headed sections — fold them into prose so the page reads as a short article, not a scaffolded form.
 
 ### Phase B — Wire into the wiki
 
 Do not skip this phase. A source note that is not linked from any article or map page, and has no outbound wikilinks to one, is incomplete.
 
-6. **Locality guard.** During ingest, direct edits are limited to the source note plus 1–3 theme anchors identified here. If a useful change would reach beyond those anchors into a broader cluster, defer it to `/lint` or `/synthesize`.
-7. **Identify themes.** Name 1–3 broader themes this source belongs to (e.g., "evaluation metrics", "animal ethics"). If step 5 added a `## Themes` section, start from those. If the source was too thin to rewrite, or you skipped the rewrite because the generated note was already faithful, derive the themes now from whatever content is available — the title, summary, and any prose already in the note.
-8. **Wire into existing structure.** For each theme:
-   - Search the wiki for an existing article or map.
-   - If one exists and this source strengthens it, treat that page as the anchor. Update only that anchor page to incorporate the source's evidence or nuance, and ensure a `[[wikilink]]` connects the source note and the article/map (either outbound from the source note or via the anchor page citing `[[Source Title]]`).
+6. **Locality guard.** During ingest, direct edits are limited to the source note plus 1–3 theme anchors identified in Phase A. If a useful change would reach beyond those anchors into a broader cluster, defer it to `/lint` or `/synthesize`.
+7. **Wire into existing structure.** For each theme identified in Phase A:
+   - If an article or map already covers it and this source strengthens it, treat that page as the anchor. Update only that anchor page to incorporate the source's evidence or nuance, and ensure a `[[wikilink]]` connects the source note and the article/map (either outbound from the source note or via the anchor page citing `[[Source Title]]`).
    - If no article exists but 3+ sources now touch the theme, create a `seed` article that synthesizes across them and treat that new page as the anchor for this ingest pass.
-   - If fewer than 3 sources share the theme, note the gap in the log entry rather than creating a stub article.
-9. **Verify wiring.** Run `compile obsidian neighbors "Source Title"`. The source note should be connected to at least one article or map page via outbound links or inbound backlinks from an article/map. If it isn't and a plausible target exists, return to step 8. If no target exists, explain why in the log entry.
-10. **Companion artifact.** Consider a richer format using the triggers below. Offer the artifact when it would add durable value. Create it only when the user asks for it or explicitly agrees.
-11. Run `compile obsidian refresh` and then `compile health`.
-12. **Cross-source synthesis check.** Before ending the session, if you ingested more than one source, pause and ask: does the set make a claim, pattern, or tension visible that no single source makes visible? If yes, capture it inside the same local boundary when possible. If the right change would span a broader cluster, defer that work to `/synthesize`. If two sources materially disagree — on facts, norms, or framing — surface the disagreement in the relevant anchor article with a `> [!warning] Disagreement` callout naming both sources and the specific point of contention. Do not resolve disagreements by picking a winner.
+   - If fewer than 3 sources share the theme, log the gap in `log.md` rather than creating a stub article or a single-source map. Do not back-fill `[[wikilinks]]` to anchors that will not exist.
+8. **Verify wiring.** Run `compile obsidian neighbors "Source Title"`. The source note should be connected to at least one article or map page via outbound links or inbound backlinks from an article/map. If it isn't and a plausible target exists, return to step 7. If no target exists, explain why in the log entry.
+9. **Companion artifact.** Consider a richer format using the triggers below. Offer the artifact when it would add durable value. Create it only when the user asks for it or explicitly agrees.
+10. Run `compile obsidian refresh` and then `compile health`.
+11. **Cross-source synthesis check.** Before ending the session, if you ingested more than one source, pause and ask: does the set make a claim, pattern, or tension visible that no single source makes visible? If yes, capture it inside the same local boundary when possible. If the right change would span a broader cluster, defer that work to `/synthesize`. If two sources materially disagree — on facts, norms, or framing — name the disagreement directly in prose in the relevant anchor article, citing both sources and the specific point of contention. Do not resolve disagreements by picking a winner, and do not use `> [!warning] Disagreement` callouts — write the disagreement as plain sentences so the article reads as a finished piece.
 
 ### PDF sources
 
@@ -185,8 +181,8 @@ Optional when relevant: `tags`, `aliases`, `sources`, `source_ids`, `cssclasses`
 6. Save durable outputs back into the wiki.
 7. Keep navigation current.
 8. Verify quote-sensitive material against the raw source.
-9. Keep map pages lightweight and navigational; use whatever structure helps readers browse the topic.
-10. Surface disagreement. When two sources materially disagree — on factual claims, normative positions, or theoretical frameworks — update the relevant article with a `> [!warning] Disagreement` callout naming both sources and the specific disagreement. Do not resolve the disagreement by picking a winner. Present both positions with their evidence or reasoning.
+9. Keep map pages lightweight and navigational; use whatever structure helps readers browse the topic. A map should cover a coherent cluster — if it would group unrelated single-source themes into a "miscellaneous" bucket, log the gap and defer the map until a real cluster forms.
+10. Surface disagreement. When two sources materially disagree — on factual claims, normative positions, or theoretical frameworks — name the disagreement directly in prose in the relevant article, citing both sources and the specific point of contention. Do not resolve the disagreement by picking a winner. Present both positions with their evidence or reasoning. Do not use `> [!warning] Disagreement` callouts; write disagreements as plain sentences so the article reads as a finished piece.
 11. During `/ingest`, keep edits local: the source note plus 1–3 theme anchors. Use `/lint` or `/synthesize` for broader changes.
 12. Render math as LaTeX, not Unicode. When rewriting source notes or synthesis pages, convert any Unicode math (superscripts like `ᵀ ⁺ ⁻`, subscripts like `ᵢ ₀`, operators like `Σ ∑ ∫ ∏ ≤ ≥ ≠ ∈ ∀ ∃ ∞`, Greek letters used as variables, etc.) into LaTeX wrapped in `$...$` for inline expressions or `$$...$$` for block expressions. PyMuPDF and Notion exports commonly emit Unicode math that Obsidian does not render — leaving it as raw Unicode produces unreadable notes. Do not leave mathematical expressions as raw Unicode in any maintained page.
 
@@ -198,7 +194,7 @@ Status is prompt-judged by you during ingest and lint, not machine-enforced. The
 - `emerging`: 2+ sources with partial synthesis. The page names its sources and attempts cross-source claims.
 - `stable`: 3+ sources with genuine synthesis. The page names where sources agree, where they diverge, and what remains uncertain.
 
-Source note status is always `stable` unless the note is a registration shell, has `review_status: needs_document_review`, or is too thin to support meaningful claims (e.g., an empty Notion stub). Thin source notes should be `seed` with a `> [!note]` callout explaining the gap.
+Source note status is always `stable` unless the note is a registration shell, has `review_status: needs_document_review`, or is too thin to support meaningful claims (e.g., an empty Notion stub). Thin source notes should be `seed` and kept short rather than padded; do not insert `> [!note]` callouts to flag thinness — the brevity of the note is itself the signal.
 
 Do not mark an article `stable` unless it meets the definition. When in doubt, use `seed`. When you update an article and it now meets a higher bar, upgrade it.
 

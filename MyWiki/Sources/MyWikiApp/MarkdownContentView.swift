@@ -19,6 +19,7 @@ struct MarkdownContentView: View {
                 }
             }
         }
+        .textSelection(.enabled)
         .environment(\.openURL, OpenURLAction { url in
             if let target = WikilinkParser.decodeLinkURL(url) {
                 onOpenWiki(target)
@@ -33,7 +34,24 @@ struct MarkdownContentView: View {
         let normalized = Self.preprocessMarkdown(content)
         if !normalized.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             Markdown(normalized)
-                .markdownTheme(.gitHub)
+                .markdownTheme(.basic)
+                .markdownTextStyle {
+                    FontFamily(.system(activeFont.design))
+                    ForegroundColor(EditorialPalette.textPrimary)
+                    BackgroundColor(nil)
+                    FontSize(14)
+                }
+                .markdownTextStyle(\.link) {
+                    FontFamily(.system(activeFont.design))
+                    ForegroundColor(EditorialPalette.accent)
+                    BackgroundColor(nil)
+                }
+                .markdownTextStyle(\.code) {
+                    FontFamilyVariant(.monospaced)
+                    BackgroundColor(EditorialPalette.surface)
+                    ForegroundColor(EditorialPalette.textPrimary)
+                }
+                .textSelection(.enabled)
         }
     }
 

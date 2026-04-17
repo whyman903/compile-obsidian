@@ -24,10 +24,7 @@ struct QueryDetailView: View {
                     SettingsView(model: model, onDismiss: { showSettings = false })
                 } else {
                     conversationArea
-                    Divider().overlay(EditorialPalette.border)
-                    followUpBar
-                    Divider().overlay(EditorialPalette.border)
-                    launchRow
+                    bottomPanel
                 }
             }
         }
@@ -128,8 +125,12 @@ struct QueryDetailView: View {
 
                     Color.clear.frame(height: 1).id("bottom")
                 }
-                .padding(20)
+                .frame(maxWidth: 780, alignment: .leading)
+                .padding(.horizontal, 28)
+                .padding(.vertical, 24)
+                .frame(maxWidth: .infinity, alignment: .center)
             }
+            .background(EditorialPalette.background)
             .onChange(of: model.querySession.turns.count) {
                 withAnimation {
                     proxy.scrollTo("bottom", anchor: .bottom)
@@ -142,22 +143,19 @@ struct QueryDetailView: View {
     }
 
     private func turnView(_ turn: QueryTurn) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(turn.question)
-                .font(.system(size: 13, weight: .semibold, design: activeFont.design))
-                .foregroundStyle(EditorialPalette.accent)
+        VStack(alignment: .leading, spacing: 10) {
+            questionHeader(turn.question)
             MarkdownContentView(text: turn.answer) { target in
                 model.openWikiPage(target: target)
             }
+            .padding(.leading, 15)
         }
     }
 
     @ViewBuilder
     private var activeTurnView: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(model.querySession.question)
-                .font(.system(size: 13, weight: .semibold, design: activeFont.design))
-                .foregroundStyle(EditorialPalette.accent)
+        VStack(alignment: .leading, spacing: 10) {
+            questionHeader(model.querySession.question)
 
             if model.querySession.status == .running && model.querySession.assistantText.isEmpty {
                 HStack(spacing: 8) {
@@ -167,19 +165,50 @@ struct QueryDetailView: View {
                         .font(.system(size: 13, design: activeFont.design).italic())
                         .foregroundStyle(EditorialPalette.textTertiary)
                 }
+                .padding(.leading, 15)
             } else if model.querySession.status == .failed {
                 Text(model.querySession.errorMessage ?? "Query failed")
                     .font(.system(size: 13))
                     .foregroundStyle(EditorialPalette.warning)
+                    .textSelection(.enabled)
+                    .padding(.leading, 15)
             } else if !model.querySession.assistantText.isEmpty {
                 MarkdownContentView(text: model.querySession.assistantText) { target in
                     model.openWikiPage(target: target)
                 }
+                .padding(.leading, 15)
             }
         }
     }
 
+    private func questionHeader(_ text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 9) {
+            Circle()
+                .fill(EditorialPalette.accent)
+                .frame(width: 6, height: 6)
+            Text(text)
+                .font(.system(size: 13, weight: .semibold, design: activeFont.design))
+                .foregroundStyle(EditorialPalette.textPrimary)
+                .textSelection(.enabled)
+        }
+    }
+
     // MARK: - Follow-up input
+
+    private var bottomPanel: some View {
+        VStack(spacing: 10) {
+            followUpBar
+            launchRow
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(EditorialPalette.backgroundTop)
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(EditorialPalette.border)
+                .frame(height: 1)
+        }
+    }
 
     private var followUpBar: some View {
         HStack(spacing: 10) {
@@ -206,9 +235,16 @@ struct QueryDetailView: View {
             .disabled(followUpText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             .keyboardShortcut(.return, modifiers: .command)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .background(EditorialPalette.surface)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(EditorialPalette.background)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .strokeBorder(EditorialPalette.border, lineWidth: 1)
+        )
     }
 
     private func submitFollowUp() {
@@ -226,42 +262,35 @@ struct QueryDetailView: View {
     // MARK: - Launch row
 
     private var launchRow: some View {
-        HStack(spacing: 10) {
-            EditorialLaunchTile(
+        HStack(spacing: 8) {
+            QueryActionButton(
                 title: "Terminal",
-                caption: "Blank session",
                 action: { model.launchBareClaude() }
             ) {
                 Image(systemName: "terminal")
-                    .font(.system(size: 14, weight: .regular))
+                    .font(.system(size: 12, weight: .regular))
             }
-            EditorialLaunchTile(
+            QueryActionButton(
                 title: "Obsidian",
-                caption: "Open vault",
                 action: { model.openWorkspaceInObsidian() }
             ) {
-                ObsidianMark(size: 15)
+                ObsidianMark(size: 13)
             }
-            EditorialLaunchTile(
+            QueryActionButton(
                 title: "Graph",
-                caption: "Network view",
                 action: { model.openObsidianGraph() }
             ) {
                 Image(systemName: "point.3.connected.trianglepath.dotted")
-                    .font(.system(size: 14, weight: .regular))
+                    .font(.system(size: 12, weight: .regular))
             }
-            EditorialLaunchTile(
+            QueryActionButton(
                 title: "Files",
-                caption: "Add to wiki",
                 action: { model.chooseFilesForIngest() }
             ) {
                 Image(systemName: "doc.badge.plus")
-                    .font(.system(size: 14, weight: .regular))
+                    .font(.system(size: 12, weight: .regular))
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .background(EditorialPalette.backgroundTop)
     }
 
     private var hasAnySessions: Bool {
@@ -337,5 +366,51 @@ struct QueryDetailView: View {
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 4)
+    }
+}
+
+private struct QueryActionButton<Icon: View>: View {
+    let title: String
+    let action: () -> Void
+    let icon: Icon
+
+    init(
+        title: String,
+        action: @escaping () -> Void,
+        @ViewBuilder icon: () -> Icon
+    ) {
+        self.title = title
+        self.action = action
+        self.icon = icon()
+    }
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 7) {
+                icon
+                    .foregroundStyle(isHovering ? EditorialPalette.accent : EditorialPalette.textSecondary)
+                    .frame(width: 15, height: 15)
+                Text(title)
+                    .font(.system(size: 12, weight: .medium, design: activeFont.design))
+                    .foregroundStyle(EditorialPalette.textSecondary)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 7)
+            .background(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(isHovering ? EditorialPalette.surface : Color.clear)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .strokeBorder(isHovering ? EditorialPalette.border : Color.clear, lineWidth: 1)
+            )
+            .animation(.easeOut(duration: 0.12), value: isHovering)
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovering = $0 }
     }
 }

@@ -5,11 +5,23 @@ import XCTest
 private final class FakeCompileRunner: CompileRunning, @unchecked Sendable {
     var workspaceInfo: WorkspaceInfo
     var pageResult: WikiPage
+    var searchHits: [SearchHit]
+    var pagesByLocator: [String: WikiPage]
+    var neighborhoodsByLocator: [String: WikiNeighborhood]
     private(set) var requestedPageLocators: [String] = []
 
-    init(workspaceInfo: WorkspaceInfo, pageResult: WikiPage) {
+    init(
+        workspaceInfo: WorkspaceInfo,
+        pageResult: WikiPage,
+        searchHits: [SearchHit] = [],
+        pagesByLocator: [String: WikiPage] = [:],
+        neighborhoodsByLocator: [String: WikiNeighborhood] = [:]
+    ) {
         self.workspaceInfo = workspaceInfo
         self.pageResult = pageResult
+        self.searchHits = searchHits
+        self.pagesByLocator = pagesByLocator
+        self.neighborhoodsByLocator = neighborhoodsByLocator
     }
 
     func initWorkspace(name: String, at path: URL) async throws -> WorkspaceInfo {
@@ -23,12 +35,36 @@ private final class FakeCompileRunner: CompileRunning, @unchecked Sendable {
     func prepareWorkspaceForClaude(at path: URL, force: Bool) async throws {}
 
     func search(query: String, at path: URL, limit: Int) async throws -> [SearchHit] {
-        []
+        Array(searchHits.prefix(limit))
     }
 
     func page(locator: String, at path: URL) async throws -> WikiPage {
         requestedPageLocators.append(locator)
+        if let page = pagesByLocator[locator] {
+            return page
+        }
+        if let page = pagesByLocator.values.first(where: {
+            $0.relativePath == locator || $0.title == locator
+        }) {
+            return page
+        }
         return pageResult
+    }
+
+    func neighbors(locator: String, at path: URL) async throws -> WikiNeighborhood {
+        if let neighborhood = neighborhoodsByLocator[locator] {
+            return neighborhood
+        }
+        return WikiNeighborhood(
+            page: try await page(locator: locator, at: path),
+            backlinks: [],
+            outboundPages: [],
+            outboundFiles: [],
+            supportingSourcePages: [],
+            relatedPages: [],
+            citedSourcePages: [],
+            unresolvedTargets: []
+        )
     }
 
     func ingest(
@@ -68,6 +104,42 @@ private final class SuccessfulQueryRunner: ClaudeQueryRunning, @unchecked Sendab
     ) async throws {
         onRun()
         await onEvent(.finished(text: "answer", costUSD: 0.01, durationMs: 250, permissionDenials: []))
+    }
+}
+
+private final class StreamingOnlyQueryRunner: ClaudeQueryRunning, @unchecked Sendable {
+    let text: String
+
+    init(text: String = "streamed answer") {
+        self.text = text
+    }
+
+    func runQuery(
+        prompt: String,
+        workspaceURL: URL,
+        onEvent: @escaping @Sendable (ClaudeQueryEvent) async -> Void
+    ) async throws {
+        await onEvent(.assistantText(text))
+    }
+}
+
+private final class CapturingQueryRunner: ClaudeQueryRunning, @unchecked Sendable {
+    private let queue = DispatchQueue(label: "CapturingQueryRunner")
+    private var prompts: [String] = []
+
+    var capturedPrompts: [String] {
+        queue.sync { prompts }
+    }
+
+    func runQuery(
+        prompt: String,
+        workspaceURL: URL,
+        onEvent: @escaping @Sendable (ClaudeQueryEvent) async -> Void
+    ) async throws {
+        queue.sync {
+            prompts.append(prompt)
+        }
+        await onEvent(.finished(text: "answer", costUSD: nil, durationMs: nil, permissionDenials: []))
     }
 }
 
@@ -112,6 +184,19 @@ private final class DynamicCompileRunner: CompileRunning, @unchecked Sendable {
     func page(locator: String, at path: URL) async throws -> WikiPage {
         requestedPageLocators.append(locator)
         return pageResult
+    }
+
+    func neighbors(locator: String, at path: URL) async throws -> WikiNeighborhood {
+        WikiNeighborhood(
+            page: pageResult,
+            backlinks: [],
+            outboundPages: [],
+            outboundFiles: [],
+            supportingSourcePages: [],
+            relatedPages: [],
+            citedSourcePages: [],
+            unresolvedTargets: []
+        )
     }
 
     func ingest(
@@ -166,20 +251,26 @@ final class AppModelTests: XCTestCase {
         try await super.tearDown()
     }
 
-    private func makePage(title: String, relativePath: String) throws -> WikiPage {
-        let payload = """
-        {
-          "title": "\(title)",
-          "relative_path": "\(relativePath)",
-          "page_type": "article",
-          "word_count": 10,
-          "body": "# \(title)",
-          "frontmatter": {
-            "summary": "summary"
-          }
+    private func makePage(
+        title: String,
+        relativePath: String,
+        pageType: String = "article",
+        body: String? = nil,
+        summary: String? = "summary"
+    ) throws -> WikiPage {
+        let bodyText = body ?? "# \(title)"
+        var payload: [String: Any] = [
+            "title": title,
+            "relative_path": relativePath,
+            "page_type": pageType,
+            "word_count": bodyText.split(whereSeparator: { $0.isWhitespace }).count,
+            "body": bodyText,
+        ]
+        if let summary {
+            payload["frontmatter"] = ["summary": summary]
         }
-        """
-        return try JSONDecoder().decode(WikiPage.self, from: Data(payload.utf8))
+        let data = try JSONSerialization.data(withJSONObject: payload)
+        return try JSONDecoder().decode(WikiPage.self, from: data)
     }
 
     private func writeHistory(_ records: [QueryHistoryRecord], to workspaceURL: URL) throws {
@@ -360,6 +451,202 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(secondModel.queryHistory.count, 1)
         XCTAssertEqual(secondModel.queryHistory.first?.firstQuestion, "What changed in SIDE?")
         XCTAssertEqual(secondModel.queryHistory.first?.turns.count, 1)
+    }
+
+    func testQueryCompletesFromStreamedTextWhenClaudeOmitsResultEvent() async throws {
+        let workspaceURL = tempDirectory.appending(path: "wiki-stream-only", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+
+        let info = WorkspaceInfo(
+            path: workspaceURL.path,
+            topic: "My Wiki",
+            description: "Test workspace",
+            rawFiles: 0,
+            processed: 0,
+            unprocessed: 0,
+            needsDocumentReview: 0,
+            wikiPageCount: 1
+        )
+        defaults.set(workspaceURL.path, forKey: "currentWorkspacePath")
+        let model = AppModel(
+            runner: FakeCompileRunner(
+                workspaceInfo: info,
+                pageResult: try makePage(title: "Planner", relativePath: "wiki/articles/planner.md")
+            ),
+            dispatcher: NoopDispatcher(),
+            queryRunner: StreamingOnlyQueryRunner(text: "streamed answer"),
+            logger: AppLogger(logDirectory: tempDirectory.appending(path: "logs-stream-only", directoryHint: .isDirectory)),
+            defaults: defaults,
+            fileManager: .default,
+            openWorkspaceHandler: { _ in .opened },
+            openNoteHandler: { _, _ in .opened },
+            openGraphHandler: { _ in .opened }
+        )
+
+        await model.bootstrapIfNeeded()
+        model.sendQuery("What changed?")
+
+        await waitUntil {
+            model.querySession.status == .completed
+        }
+
+        XCTAssertEqual(model.querySession.assistantText, "streamed answer")
+        XCTAssertNil(model.querySession.errorMessage)
+        XCTAssertEqual(model.queryHistory.first?.turns.first?.answer, "streamed answer")
+    }
+
+    func testQueryPromptIncludesFullSourceNoteBody() async throws {
+        let workspaceURL = tempDirectory.appending(path: "wiki-source-context", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+
+        let info = WorkspaceInfo(
+            path: workspaceURL.path,
+            topic: "My Wiki",
+            description: "Test workspace",
+            rawFiles: 0,
+            processed: 0,
+            unprocessed: 0,
+            needsDocumentReview: 0,
+            wikiPageCount: 1
+        )
+        let marker = "END_OF_FULL_SOURCE_NOTE"
+        let longBody = String(repeating: "source detail ", count: 700) + marker
+        let sourcePath = "wiki/sources/long-source.md"
+        let hit = SearchHit(
+            title: "Long Source",
+            relativePath: sourcePath,
+            pageType: "source",
+            summary: "source summary",
+            score: 100,
+            reasons: ["body"],
+            snippet: "source detail"
+        )
+        let fakeRunner = FakeCompileRunner(
+            workspaceInfo: info,
+            pageResult: try makePage(
+                title: "Long Source",
+                relativePath: sourcePath,
+                pageType: "source",
+                body: longBody,
+                summary: "source summary"
+            ),
+            searchHits: [hit]
+        )
+        let queryRunner = CapturingQueryRunner()
+        defaults.set(workspaceURL.path, forKey: "currentWorkspacePath")
+
+        let model = AppModel(
+            runner: fakeRunner,
+            dispatcher: NoopDispatcher(),
+            queryRunner: queryRunner,
+            logger: AppLogger(logDirectory: tempDirectory.appending(path: "logs-source-context", directoryHint: .isDirectory)),
+            defaults: defaults,
+            fileManager: .default,
+            openWorkspaceHandler: { _ in .opened },
+            openNoteHandler: { _, _ in .opened },
+            openGraphHandler: { _ in .opened }
+        )
+
+        await model.bootstrapIfNeeded()
+        model.sendQuery("What does the source say?")
+
+        await waitUntil {
+            model.querySession.status == .completed && !queryRunner.capturedPrompts.isEmpty
+        }
+
+        let prompt = try XCTUnwrap(queryRunner.capturedPrompts.first)
+        XCTAssertTrue(prompt.contains(marker))
+        XCTAssertTrue(prompt.contains("Type: source"))
+        XCTAssertFalse(prompt.contains("[truncated"))
+    }
+
+    func testQueryPromptExpandsArticleHitsToSupportingSourceNotes() async throws {
+        let workspaceURL = tempDirectory.appending(path: "wiki-expanded-source-context", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+
+        let info = WorkspaceInfo(
+            path: workspaceURL.path,
+            topic: "My Wiki",
+            description: "Test workspace",
+            rawFiles: 0,
+            processed: 0,
+            unprocessed: 0,
+            needsDocumentReview: 0,
+            wikiPageCount: 2
+        )
+        let articlePath = "wiki/articles/dl4se-course.md"
+        let sourceTitle = "Evaluation Metrics - Lecture 8"
+        let sourcePath = "wiki/sources/evaluation-metrics-lecture-8.md"
+        let marker = "FULL_EVALUATION_METRICS_SOURCE_NOTE"
+        let articlePage = try makePage(
+            title: "DL4SE Course - LLM for Software Engineering",
+            relativePath: articlePath,
+            pageType: "article",
+            body: "The course summarizes evaluation metrics and links to [[\(sourceTitle)]]."
+        )
+        let sourcePage = try makePage(
+            title: sourceTitle,
+            relativePath: sourcePath,
+            pageType: "source",
+            body: String(repeating: "metric detail ", count: 700) + marker
+        )
+        let hit = SearchHit(
+            title: articlePage.title,
+            relativePath: articlePath,
+            pageType: "article",
+            summary: "Course summary.",
+            score: 80,
+            reasons: ["body"],
+            snippet: "evaluation metrics"
+        )
+        let neighborhood = WikiNeighborhood(
+            page: articlePage,
+            backlinks: [],
+            outboundPages: [sourceTitle],
+            outboundFiles: [],
+            supportingSourcePages: [sourceTitle],
+            relatedPages: [],
+            citedSourcePages: [],
+            unresolvedTargets: []
+        )
+        let fakeRunner = FakeCompileRunner(
+            workspaceInfo: info,
+            pageResult: articlePage,
+            searchHits: [hit],
+            pagesByLocator: [
+                articlePath: articlePage,
+                sourceTitle: sourcePage,
+                sourcePath: sourcePage,
+            ],
+            neighborhoodsByLocator: [articlePath: neighborhood]
+        )
+        let queryRunner = CapturingQueryRunner()
+        defaults.set(workspaceURL.path, forKey: "currentWorkspacePath")
+
+        let model = AppModel(
+            runner: fakeRunner,
+            dispatcher: NoopDispatcher(),
+            queryRunner: queryRunner,
+            logger: AppLogger(logDirectory: tempDirectory.appending(path: "logs-expanded-source-context", directoryHint: .isDirectory)),
+            defaults: defaults,
+            fileManager: .default,
+            openWorkspaceHandler: { _ in .opened },
+            openNoteHandler: { _, _ in .opened },
+            openGraphHandler: { _ in .opened }
+        )
+
+        await model.bootstrapIfNeeded()
+        model.sendQuery("What is the evaluation metric distinction?")
+
+        await waitUntil {
+            model.querySession.status == .completed && !queryRunner.capturedPrompts.isEmpty
+        }
+
+        let prompt = try XCTUnwrap(queryRunner.capturedPrompts.first)
+        XCTAssertTrue(prompt.contains("DL4SE Course - LLM for Software Engineering"))
+        XCTAssertTrue(prompt.contains(marker))
+        XCTAssertTrue(prompt.contains("Type: source"))
+        XCTAssertTrue(fakeRunner.requestedPageLocators.contains(sourceTitle))
     }
 
     func testFollowUpFromRestoredHistoryUpdatesExistingRecord() async throws {

@@ -17,7 +17,7 @@ Install these once before anything else:
 |---|---|---|
 | [`uv`](https://docs.astral.sh/uv/) | Building and running the Python CLI | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | [Obsidian](https://obsidian.md) | Browsing the vault visually | Download from obsidian.md |
-| [Claude Code](https://docs.claude.com/en/docs/claude-code) | Slash commands (`/capture`, `/wiki-query`, `/ingest`, …) | `npm i -g @anthropic-ai/claude-code` or the native installer |
+| [Claude Code](https://docs.claude.com/en/docs/claude-code) | Slash commands (`/capture`, `/query`, `/ingest`, …) | `npm i -g @anthropic-ai/claude-code` or the native installer |
 | Swift 6 toolchain | Only if you want to build `MyWiki.app` | Comes with recent Xcode / Command Line Tools |
 | Python 3.11+ | Auto-managed by `uv` | — |
 
@@ -45,7 +45,7 @@ cd ~/wiki
 claude
 ```
 
-From inside Claude Code at `~/wiki` you can now use `/context`, `/ingest`, `/query`, `/lint`, `/synthesize`, `/notion-setup`, `/notion-sync`. From any other Claude Code session, the global bridge commands `/capture`, `/wiki-query`, and `/wiki-context` target this workspace.
+From Claude Code you can now use `/query` and `/context` anywhere. They use the current directory when it is a compile workspace; otherwise they fall back to this configured wiki. From inside the wiki workspace, you can also use `/ingest`, `/lint`, `/synthesize`, `/notion-setup`, and `/notion-sync`. The global `/capture` command always targets this configured wiki.
 
 Those slash commands are the primary UX. They decide when to create, update, or synthesize pages; the low-level page writer stays underneath them.
 
@@ -83,7 +83,7 @@ Templates under `compile/templates/` evolve. After a CLI update, push the latest
 compile claude setup ~/wiki --force
 ```
 
-`--force` overwrites the global bridge commands (`~/.claude/commands/{capture,wiki-query,wiki-context}.md`), the workspace `CLAUDE.md`, and the workspace-local `.claude/commands/*.md`. Settings (`.claude/settings.local.json`) are merged, not overwritten — your custom permissions survive.
+`--force` overwrites the global commands (`~/.claude/commands/{capture,query,context}.md`), the workspace `CLAUDE.md`, and the workspace-local `.claude/commands/*.md`. Settings (`.claude/settings.local.json`) are merged, not overwritten — your custom permissions survive.
 
 Without `--force`, `compile claude setup` only installs files that are missing and warns if any global command points at a different wiki.
 
@@ -158,23 +158,16 @@ Every source you process and every question you keep makes the wiki richer. The 
 - `map` — navigation page curating a region of the wiki.
 - `output` — saved answer, comparison, Marp deck, chart, or canvas.
 
-### What the commands do
+### Everyday commands
 
-From any Claude Code session (global bridge commands):
+Use MyWiki.app or these Claude commands for normal work:
 
 | Command | What it does |
 |---|---|
 | `/capture` | Write a thought or snippet into `~/wiki/raw/` and ingest it. |
-| `/wiki-query` | Answer a question using the wiki; optionally file the answer back as an output page. |
-| `/wiki-context` | Load the wiki's status, index, overview, and schema into the current session. |
-
-From inside the wiki workspace:
-
-| Command | What it does |
-|---|---|
-| `/context` | Same as `/wiki-context` but scoped to the current workspace. |
-| `/ingest [source]` | Register a raw file or URL as a source note and wire it into related articles/maps. |
-| `/query` | Search and synthesize an answer with citations. |
+| `/query` | Search and synthesize an answer with citations. Uses the current wiki when you are in one; otherwise uses the configured default wiki. |
+| `/context` | Load wiki status, index, overview, and schema into the current session. Uses the current wiki when you are in one; otherwise uses the configured default wiki. |
+| `/ingest [source]` | Register a raw file or URL as a source note and wire it into related articles/maps. Run from inside the wiki workspace. |
 | `/lint` | Full audit: broken links, status honesty, dead-end source notes, coverage gaps. |
 | `/synthesize [theme]` | Deliberately connect accumulated sources into articles or maps. |
 | `/notion-setup` | Save a natural-language Notion sync scope to `.compile/notion-sync-profile.json`. |
@@ -182,11 +175,11 @@ From inside the wiki workspace:
 
 ---
 
-## Direct CLI reference
+## Automation / Scripting CLI
 
-These wrap the same logic the slash commands drive. Run any of them from inside a workspace, or pass `-p /path/to/wiki`.
+Use `compile ...` when you want deterministic operations without an LLM loop: scripts, CI, cron jobs, debugging, or precise repair work. Run commands from inside a workspace, or pass `-p /path/to/wiki`.
 
-For normal use, prefer `/ingest`, `/query`, `/lint`, `/synthesize`, or MyWiki.app. `compile obsidian upsert` is the low-level page writer behind those workflows, not the primary surface.
+For everyday use, prefer MyWiki.app and the slash commands above. The CLI remains a supported automation surface, and `compile obsidian upsert` is the low-level page writer behind those workflows.
 
 ```bash
 compile status                          # Workspace summary.

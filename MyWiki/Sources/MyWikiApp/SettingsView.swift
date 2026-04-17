@@ -11,6 +11,7 @@ struct SettingsView: View {
                 themeSection
                 fontSection
                 obsidianSection
+                claudeCommandsSection
                 previewSection
             }
             .padding(28)
@@ -101,6 +102,48 @@ struct SettingsView: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(model.isInstallingGraphPlugin || model.workspace == nil)
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(EditorialPalette.surface)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(EditorialPalette.border, lineWidth: 1)
+            )
+        }
+    }
+
+    private var claudeCommandsSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("CLAUDE COMMANDS")
+                .font(.system(size: 10, weight: .bold))
+                .kerning(1.3)
+                .foregroundStyle(EditorialPalette.textTertiary)
+
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Slash commands live in `.claude/commands/` inside your wiki. Edit them in any editor to customize how Claude responds.")
+                    .font(.system(size: 13, design: activeFont.design))
+                    .foregroundStyle(EditorialPalette.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Button {
+                    model.revealClaudeCommandsInFinder()
+                } label: {
+                    Text("Edit Commands in Finder")
+                        .font(.system(size: 12, weight: .semibold, design: activeFont.design))
+                        .foregroundStyle(EditorialPalette.background)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                .fill(EditorialPalette.accent)
+                        )
+                }
+                .buttonStyle(.plain)
+                .disabled(model.workspace == nil)
             }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)

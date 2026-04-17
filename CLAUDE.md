@@ -43,7 +43,7 @@ swift test --package-path MyWiki         # Swift test suite
 - `compile/fetch.py` — URL ingestion and optional image download for web sources.
 - `compile/health.py` / `compile/verify.py` — structural and editorial health reporting.
 - `compile/search_index.py` — SQLite FTS index for PDF chunks.
-- `compile/templates/global/` — installed into `~/.claude/commands/` (bridge commands).
+- `compile/templates/global/` — installed into `~/.claude/commands/` (context-aware commands available from any session).
 - `compile/templates/workspace/` — installed into each wiki (`CLAUDE.md`, `.claude/commands/*.md`, `.claude/settings.local.json`).
 - `compile/resources.py` — resolves template paths in both `uv tool` installs and the PyInstaller bundle.
 
