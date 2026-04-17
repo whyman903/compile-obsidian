@@ -98,6 +98,10 @@ Do not create rendered artifacts by default for routine notes or answers. Offer 
 
 When the user adds a source to `raw/` and asks you to process it, work through two phases. Phase A stands up the source note. Phase B wires it into the wiki and is mandatory — a source note disconnected from any article or map is incomplete.
 
+### Parallelism
+
+Treat ingest as phased work. Batch independent read-only steps together when helpful, such as wiki searches, reading related pages, and reading raw sources. Serialize workspace writes: do not run multiple `compile ingest` commands in parallel, do not update multiple anchor pages concurrently, and run `compile obsidian refresh` plus `compile health` once after the write phase finishes.
+
 ### Phase A — Enrich the source note
 
 1. Search the wiki first for existing related pages.

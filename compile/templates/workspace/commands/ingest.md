@@ -4,6 +4,10 @@ Argument: $ARGUMENTS (filename in `raw/`, a URL, or leave blank to process the n
 
 Use the workspace `CLAUDE.md` as the canonical workflow contract. Work through two phases. Phase A creates the source note. Phase B wires it into the wiki and is mandatory — do not stop after Phase A.
 
+### Parallelism
+
+Treat `/ingest` as phased work. You may batch independent read-only steps in one message when helpful, such as `compile obsidian search`, reading candidate pages, and reading raw sources. Serialize workspace writes: do not run multiple `compile ingest` commands in parallel, do not rewrite multiple anchor pages concurrently, and run `compile obsidian refresh` plus `compile health` once after the write phase is done.
+
 ### Phase A — Create and enrich the source note
 
 1. If no argument is given, run `compile status` and pick the next unprocessed source. If the argument is a URL, use that URL directly. Otherwise use the provided `raw/` file.

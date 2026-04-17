@@ -16,7 +16,9 @@
       "Bash(compile health)",
       "Bash(uv run compile ingest raw/notion/*)",
       "Bash(uv run compile obsidian refresh)",
-      "Bash(uv run compile health)"
+      "Bash(uv run compile health)",
+      "Grep(//Users/walkerhyman/.local/share/uv/tools/compile-wiki/**)",
+      "Grep(~/.local/share/uv/tools/compile-wiki/**)"
     ]
   },
   "hooks": {

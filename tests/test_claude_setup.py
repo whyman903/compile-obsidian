@@ -272,6 +272,7 @@ def test_ingest_template_matches_simplified_workflow(tmp_path: Path) -> None:
     assert "## Key Claims" in ingest_content
     assert "compile obsidian neighbors" in ingest_content
     assert "direct edits during `/ingest` are limited to the source note plus 1–3 theme anchors" in ingest_content
+    assert "do not run multiple `compile ingest` commands in parallel" in ingest_content
 
 
 def test_claude_md_has_status_discipline_and_synthesis_guidance(tmp_path: Path) -> None:
@@ -287,6 +288,18 @@ def test_claude_md_has_status_discipline_and_synthesis_guidance(tmp_path: Path) 
     # Two-phase ingest structure lives in the contract.
     assert "Phase A" in claude_md
     assert "Phase B" in claude_md
+    assert "do not run multiple `compile ingest` commands in parallel" in claude_md
+
+
+def test_notion_sync_template_separates_snapshot_and_ingest_phases(tmp_path: Path) -> None:
+    ws = _make_workspace(tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+    install_claude_files(ws, home, force=False)
+    notion_sync = (ws / ".claude" / "commands" / "notion-sync.md").read_text()
+    assert "write distinct `raw/notion/<page_id>.md` snapshots in parallel" in notion_sync
+    assert "run `compile ingest raw/notion/<page_id>.md` one page at a time" in notion_sync
+    assert "After the snapshot phase finishes" in notion_sync
 
 
 def test_synthesize_command_is_installed(tmp_path: Path) -> None:
