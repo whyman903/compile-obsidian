@@ -124,26 +124,48 @@ struct SettingsView: View {
                 .foregroundStyle(EditorialPalette.textTertiary)
 
             VStack(alignment: .leading, spacing: 10) {
-                Text("Slash commands live in `.claude/commands/` inside your wiki. Edit them in any editor to customize how Claude responds.")
+                Text("Slash commands live in `.claude/commands/` inside your wiki. Edit them in any editor to customize how Claude responds. After updating MyWiki, use Reset to Defaults to pick up new shipped commands (this overwrites your edits).")
                     .font(.system(size: 13, design: activeFont.design))
                     .foregroundStyle(EditorialPalette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Button {
-                    model.revealClaudeCommandsInFinder()
-                } label: {
-                    Text("Edit Commands in Finder")
-                        .font(.system(size: 12, weight: .semibold, design: activeFont.design))
-                        .foregroundStyle(EditorialPalette.background)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(
-                            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                .fill(EditorialPalette.accent)
-                        )
+                HStack(spacing: 10) {
+                    Button {
+                        model.revealClaudeCommandsInFinder()
+                    } label: {
+                        Text("Edit Commands in Finder")
+                            .font(.system(size: 12, weight: .semibold, design: activeFont.design))
+                            .foregroundStyle(EditorialPalette.background)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(EditorialPalette.accent)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(model.workspace == nil)
+
+                    Button {
+                        Task { await model.refreshClaudeCommands() }
+                    } label: {
+                        Text("Reset to Defaults")
+                            .font(.system(size: 12, weight: .semibold, design: activeFont.design))
+                            .foregroundStyle(EditorialPalette.textSecondary)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .fill(EditorialPalette.surface)
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                    .strokeBorder(EditorialPalette.border, lineWidth: 1)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(model.workspace == nil)
                 }
-                .buttonStyle(.plain)
-                .disabled(model.workspace == nil)
             }
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)

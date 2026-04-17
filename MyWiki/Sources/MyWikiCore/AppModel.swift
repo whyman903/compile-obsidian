@@ -649,6 +649,20 @@ public final class AppModel {
         NSWorkspace.shared.activateFileViewerSelecting([commandsURL])
     }
 
+    public func refreshClaudeCommands() async {
+        guard let workspace else {
+            lastError = "No workspace is active."
+            return
+        }
+        do {
+            try await runner.prepareWorkspaceForClaude(at: workspace.url, force: true)
+            flashToast("Updated Claude commands from the app bundle.")
+        } catch {
+            logger.log("Failed to refresh Claude commands: \(error)")
+            lastError = "Could not update commands: \(error.localizedDescription)"
+        }
+    }
+
     public func openFeedItem(_ item: FeedItem) {
         guard let workspace, let relativePath = item.stagedRelativePath else {
             return

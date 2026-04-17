@@ -7,11 +7,14 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-15
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
+
+      - name: Select Xcode 16 (Swift 6)
+        run: sudo xcode-select -s /Applications/Xcode_16.app
 
       - name: Install uv
         uses: astral-sh/setup-uv@v3
