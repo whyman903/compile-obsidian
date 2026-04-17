@@ -188,6 +188,7 @@ Optional when relevant: `tags`, `aliases`, `sources`, `source_ids`, `cssclasses`
 9. Keep map pages lightweight and navigational; use whatever structure helps readers browse the topic.
 10. Surface disagreement. When two sources materially disagree — on factual claims, normative positions, or theoretical frameworks — update the relevant article with a `> [!warning] Disagreement` callout naming both sources and the specific disagreement. Do not resolve the disagreement by picking a winner. Present both positions with their evidence or reasoning.
 11. During `/ingest`, keep edits local: the source note plus 1–3 theme anchors. Use `/lint` or `/synthesize` for broader changes.
+12. Render math as LaTeX, not Unicode. When rewriting source notes or synthesis pages, convert any Unicode math (superscripts like `ᵀ ⁺ ⁻`, subscripts like `ᵢ ₀`, operators like `Σ ∑ ∫ ∏ ≤ ≥ ≠ ∈ ∀ ∃ ∞`, Greek letters used as variables, etc.) into LaTeX wrapped in `$...$` for inline expressions or `$$...$$` for block expressions. PyMuPDF and Notion exports commonly emit Unicode math that Obsidian does not render — leaving it as raw Unicode produces unreadable notes. Do not leave mathematical expressions as raw Unicode in any maintained page.
 
 ## Status Discipline
 
