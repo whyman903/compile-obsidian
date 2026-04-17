@@ -75,9 +75,9 @@ struct SettingsView: View {
                 .foregroundStyle(EditorialPalette.textTertiary)
 
             VStack(alignment: .leading, spacing: 10) {
-                Text(model.isGraphPluginInstalled
-                     ? "Graph opens directly through Advanced URI for this vault."
-                     : "Graph opening uses the Advanced URI plugin instead of Accessibility automation.")
+                Text(model.canOpenGraphDirectly
+                     ? "Graph opens directly in Obsidian for this vault."
+                     : "Graph opening can use the Advanced URI plugin for this vault.")
                     .font(.system(size: 13, design: activeFont.design))
                     .foregroundStyle(EditorialPalette.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)

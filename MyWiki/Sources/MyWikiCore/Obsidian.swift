@@ -251,6 +251,15 @@ public enum ObsidianOpener {
         case failed(String)
     }
 
+    static func graphCommandArguments(for workspaceURL: URL) -> [String] {
+        ["vault=\(workspaceURL.lastPathComponent)", "command", "id=graph:open"]
+    }
+
+    public static func canOpenGraphDirectly(workspaceURL: URL) -> Bool {
+        canOpenGraphUsingCLI(workspaceURL: workspaceURL)
+            || ObsidianAdvancedURIInstaller.isInstalledAndEnabled(in: workspaceURL)
+    }
+
     @discardableResult
     public static func openWorkspace(_ workspaceURL: URL) -> Result {
         guard FileManager.default.fileExists(atPath: workspaceURL.path) else {
@@ -298,6 +307,9 @@ public enum ObsidianOpener {
         guard isObsidianInstalled() else {
             return .notInstalled
         }
+        if openGraphUsingCLI(workspaceURL: workspaceURL) {
+            return .opened
+        }
         guard ObsidianAdvancedURIInstaller.isInstalledAndEnabled(in: workspaceURL) else {
             return .requiresAdvancedURI
         }
@@ -330,6 +342,29 @@ public enum ObsidianOpener {
         !NSRunningApplication.runningApplications(withBundleIdentifier: "md.obsidian").isEmpty
     }
 
+    static func canOpenGraphUsingCLI(
+        workspaceURL: URL,
+        registry: ObsidianVaultRegistry? = ObsidianVaultRegistry.load(),
+        cliExecutableURL: URL? = obsidianCLIExecutableURL()
+    ) -> Bool {
+        guard let cliExecutableURL,
+              FileManager.default.isExecutableFile(atPath: cliExecutableURL.path) else {
+            return false
+        }
+        return registry?.identifier(for: workspaceURL) != nil
+    }
+
+    @discardableResult
+    static func openGraphUsingCLI(
+        workspaceURL: URL,
+        runner: ([String]) -> Bool = { runObsidianCLI(arguments: $0) }
+    ) -> Bool {
+        guard canOpenGraphUsingCLI(workspaceURL: workspaceURL) else {
+            return false
+        }
+        return runner(graphCommandArguments(for: workspaceURL))
+    }
+
     @discardableResult
     private static func openWithObsidianUsingOpenCommand(_ urls: [URL]) -> Bool {
         let process = Process()
@@ -337,8 +372,40 @@ public enum ObsidianOpener {
         process.arguments = ["-a", "Obsidian"] + urls.map(\.path)
         do {
             try process.run()
-            process.waitUntilExit()
-            return process.terminationStatus == 0
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private static func obsidianCLIExecutableURL() -> URL? {
+        if let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "md.obsidian") {
+            let cliURL = appURL.appending(path: "Contents/MacOS/obsidian", directoryHint: .notDirectory)
+            if FileManager.default.isExecutableFile(atPath: cliURL.path) {
+                return cliURL
+            }
+        }
+
+        let fallbackURL = URL(fileURLWithPath: "/Applications/Obsidian.app/Contents/MacOS/obsidian")
+        guard FileManager.default.isExecutableFile(atPath: fallbackURL.path) else {
+            return nil
+        }
+        return fallbackURL
+    }
+
+    @discardableResult
+    private static func runObsidianCLI(arguments: [String]) -> Bool {
+        guard let executableURL = obsidianCLIExecutableURL() else {
+            return false
+        }
+
+        let process = Process()
+        process.executableURL = executableURL
+        process.arguments = arguments
+
+        do {
+            try process.run()
+            return true
         } catch {
             return false
         }

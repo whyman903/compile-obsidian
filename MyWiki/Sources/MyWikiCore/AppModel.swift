@@ -72,6 +72,7 @@ public final class AppModel {
     private let openWorkspaceHandler: @MainActor (URL) -> ObsidianOpener.Result
     private let openNoteHandler: @MainActor (String, URL) -> ObsidianOpener.Result
     private let openGraphHandler: @MainActor (URL) -> ObsidianOpener.Result
+    private let canOpenGraphDirectlyHandler: @MainActor (URL) -> Bool
     private let isGraphPluginInstalledHandler: @MainActor (URL) -> Bool
     private let installGraphPluginHandler: @MainActor (URL) async throws -> Void
     private let isObsidianRunningHandler: @MainActor () -> Bool
@@ -96,6 +97,7 @@ public final class AppModel {
         openWorkspaceHandler: @escaping @MainActor (URL) -> ObsidianOpener.Result = ObsidianOpener.openWorkspace,
         openNoteHandler: @escaping @MainActor (String, URL) -> ObsidianOpener.Result = ObsidianOpener.openNote,
         openGraphHandler: @escaping @MainActor (URL) -> ObsidianOpener.Result = ObsidianOpener.openGraph,
+        canOpenGraphDirectlyHandler: @escaping @MainActor (URL) -> Bool = ObsidianOpener.canOpenGraphDirectly,
         isGraphPluginInstalledHandler: @escaping @MainActor (URL) -> Bool = {
             ObsidianAdvancedURIInstaller.isInstalledAndEnabled(in: $0)
         },
@@ -116,6 +118,7 @@ public final class AppModel {
         self.openWorkspaceHandler = openWorkspaceHandler
         self.openNoteHandler = openNoteHandler
         self.openGraphHandler = openGraphHandler
+        self.canOpenGraphDirectlyHandler = canOpenGraphDirectlyHandler
         self.isGraphPluginInstalledHandler = isGraphPluginInstalledHandler
         self.installGraphPluginHandler = installGraphPluginHandler
         self.isObsidianRunningHandler = isObsidianRunningHandler
@@ -127,6 +130,11 @@ public final class AppModel {
     public var isGraphPluginInstalled: Bool {
         guard let workspace else { return false }
         return isGraphPluginInstalledHandler(workspace.url)
+    }
+
+    public var canOpenGraphDirectly: Bool {
+        guard let workspace else { return false }
+        return canOpenGraphDirectlyHandler(workspace.url)
     }
 
     public func bootstrapIfNeeded() async {
@@ -522,7 +530,12 @@ public final class AppModel {
             lastError = "Workspace is not ready yet."
             return
         }
-        guard isGraphPluginInstalledHandler(workspace.url) else {
+        let canOpenDirectly = canOpenGraphDirectlyHandler(workspace.url)
+        let pluginInstalled = isGraphPluginInstalledHandler(workspace.url)
+        logger.log(
+            "openObsidianGraph: workspace=\(workspace.url.path) canOpenDirectly=\(canOpenDirectly) pluginInstalled=\(pluginInstalled)"
+        )
+        guard canOpenDirectly else {
             if defaults.bool(forKey: graphPluginPromptSuppressedKey(for: workspace.url)) {
                 lastError = "Graph view needs the Advanced URI plugin. Open Settings to install it for this vault."
             } else {
@@ -530,7 +543,9 @@ public final class AppModel {
             }
             return
         }
-        switch openGraphHandler(workspace.url) {
+        let result = openGraphHandler(workspace.url)
+        logger.log("openObsidianGraph: result=\(String(describing: result))")
+        switch result {
         case .opened:
             flashToast("Opening graph in Obsidian")
         case .openedVaultForRegistration:
