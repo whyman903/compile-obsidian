@@ -37,3 +37,6 @@ codesign --force --sign - "$APP_BUNDLE/Contents/Resources/compile-bin"
 codesign --force --sign - --deep "$APP_BUNDLE"
 
 echo "Built app bundle at: $APP_BUNDLE"
+echo "Launching MyWiki.app..."
+pkill -f "$APP_BUNDLE/Contents/MacOS/MyWiki" >/dev/null 2>&1 || true
+open "$APP_BUNDLE"
