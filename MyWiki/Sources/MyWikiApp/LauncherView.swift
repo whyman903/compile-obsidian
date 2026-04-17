@@ -102,6 +102,14 @@ enum EditorialPalette {
     static var textTertiary: Color  { colors.textTertiary }
     static var accent: Color        { colors.accent }
     static var accentHover: Color   { colors.accentHover }
+    static var link: Color {
+        switch activeTheme {
+        case .obsidian:
+            return Color(red: 0.520, green: 0.740, blue: 1.000)
+        case .ivory, .umber:
+            return colors.accent
+        }
+    }
     static var warning: Color       { colors.warning }
 }
 

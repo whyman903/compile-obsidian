@@ -34,25 +34,29 @@ struct MarkdownContentView: View {
         let normalized = Self.preprocessMarkdown(content)
         if !normalized.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             Markdown(normalized)
-                .markdownTheme(.basic)
-                .markdownTextStyle {
-                    FontFamily(.system(activeFont.design))
-                    ForegroundColor(EditorialPalette.textPrimary)
-                    BackgroundColor(nil)
-                    FontSize(14)
-                }
-                .markdownTextStyle(\.link) {
-                    FontFamily(.system(activeFont.design))
-                    ForegroundColor(EditorialPalette.accent)
-                    BackgroundColor(nil)
-                }
-                .markdownTextStyle(\.code) {
-                    FontFamilyVariant(.monospaced)
-                    BackgroundColor(EditorialPalette.surface)
-                    ForegroundColor(EditorialPalette.textPrimary)
-                }
-                .textSelection(.enabled)
+                .markdownTheme(markdownTheme)
+                .tint(EditorialPalette.link)
         }
+    }
+
+    private var markdownTheme: Theme {
+        .basic
+            .text {
+                FontFamily(.system(activeFont.design))
+                ForegroundColor(EditorialPalette.textPrimary)
+                BackgroundColor(nil)
+                FontSize(14)
+            }
+            .link {
+                FontFamily(.system(activeFont.design))
+                ForegroundColor(EditorialPalette.link)
+                BackgroundColor(nil)
+            }
+            .code {
+                FontFamilyVariant(.monospaced)
+                BackgroundColor(EditorialPalette.surface)
+                ForegroundColor(EditorialPalette.textPrimary)
+            }
     }
 
     private func calloutView(kind: String, title: String, body: String) -> some View {

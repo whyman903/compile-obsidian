@@ -48,8 +48,6 @@ from compile.workspace import (
 )
 
 console = Console()
-OBSOLETE_GLOBAL_COMMANDS = ("wiki-enrich.md", "wiki-query.md", "wiki-context.md")
-OBSOLETE_WORKSPACE_COMMANDS = ("enrich.md", "query.md", "context.md")
 IngestEventCallback = Callable[[dict[str, Any]], None]
 
 
@@ -61,14 +59,10 @@ def _load_workspace():
         raise SystemExit(1)
 
 
-def _iter_managed_templates(directory: Path, *, obsolete: tuple[str, ...] = ()) -> list[Path]:
+def _iter_managed_templates(directory: Path) -> list[Path]:
     if not directory.is_dir():
         raise FileNotFoundError(f"Claude template directory not found: {directory}")
-    return sorted(
-        path
-        for path in directory.iterdir()
-        if path.is_file() and path.name not in obsolete
-    )
+    return sorted(path for path in directory.iterdir() if path.is_file())
 
 
 def _emit_json(payload: dict[str, Any]) -> None:
@@ -1364,15 +1358,6 @@ def claude_setup(path: str, force: bool) -> None:
         for f in result["mispointed"]:
             console.print(f"  ! {f}")
         console.print("[red]Use --force to rebind them to this workspace.[/red]")
-    if result["obsolete"]:
-        console.print(f"[yellow]Obsolete managed file(s) detected:[/yellow]")
-        for f in result["obsolete"]:
-            console.print(f"  - {f}")
-        console.print("[yellow]Re-run with --force to remove them.[/yellow]")
-    if result["removed"]:
-        console.print(f"[green]Removed obsolete managed file(s):[/green]")
-        for f in result["removed"]:
-            console.print(f"  - {f}")
     if result["skipped"]:
         console.print(f"[yellow]Skipped {len(result['skipped'])} existing file(s) (use --force to overwrite):[/yellow]")
         for f in result["skipped"]:
@@ -1381,8 +1366,6 @@ def claude_setup(path: str, force: bool) -> None:
         not result["installed"]
         and not result["skipped"]
         and not result["mispointed"]
-        and not result["obsolete"]
-        and not result["removed"]
     ):
         console.print("[dim]Nothing to install.[/dim]")
 
@@ -1392,7 +1375,7 @@ def install_claude_files(
 ) -> dict[str, list[str]]:
     """Install Claude Code commands for a wiki workspace.
 
-    Returns a dict with keys: installed, skipped, mispointed, obsolete, removed.
+    Returns a dict with keys: installed, skipped, mispointed.
     """
     templates = resource_path("templates")
     if not templates.is_dir():
@@ -1404,17 +1387,12 @@ def install_claude_files(
     installed: list[str] = []
     skipped: list[str] = []
     mispointed: list[str] = []
-    obsolete: list[str] = []
-    removed: list[str] = []
 
     # --- Context-aware global commands ---
     global_dir = home / ".claude" / "commands"
     global_dir.mkdir(parents=True, exist_ok=True)
 
-    for template_file in _iter_managed_templates(
-        templates / "global",
-        obsolete=OBSOLETE_GLOBAL_COMMANDS,
-    ):
+    for template_file in _iter_managed_templates(templates / "global"):
         dest = global_dir / template_file.name
         if dest.exists() and not force:
             existing = dest.read_text()
@@ -1427,16 +1405,6 @@ def install_claude_files(
         content = template_file.read_text().replace("{{wiki_path}}", wiki_path_str)
         dest.write_text(content)
         installed.append(str(dest))
-
-    for obsolete_name in OBSOLETE_GLOBAL_COMMANDS:
-        dest = global_dir / obsolete_name
-        if not dest.exists():
-            continue
-        if force:
-            dest.unlink()
-            removed.append(str(dest))
-        else:
-            obsolete.append(str(dest))
 
     # --- Workspace-local files ---
     workspace_claude_dir = wiki_path / ".claude" / "commands"
@@ -1477,10 +1445,7 @@ def install_claude_files(
         installed.append(str(settings_dest))
 
     # Workspace commands
-    for template_file in _iter_managed_templates(
-        templates / "workspace" / "commands",
-        obsolete=OBSOLETE_WORKSPACE_COMMANDS,
-    ):
+    for template_file in _iter_managed_templates(templates / "workspace" / "commands"):
         dest = workspace_claude_dir / template_file.name
         if dest.exists() and not force:
             skipped.append(str(dest))
@@ -1488,22 +1453,10 @@ def install_claude_files(
         dest.write_text(template_file.read_text())
         installed.append(str(dest))
 
-    for obsolete_name in OBSOLETE_WORKSPACE_COMMANDS:
-        dest = workspace_claude_dir / obsolete_name
-        if not dest.exists():
-            continue
-        if force:
-            dest.unlink()
-            removed.append(str(dest))
-        else:
-            obsolete.append(str(dest))
-
     return {
         "installed": installed,
         "skipped": skipped,
         "mispointed": mispointed,
-        "obsolete": obsolete,
-        "removed": removed,
     }
 
 

@@ -34,8 +34,6 @@ def test_fresh_install(tmp_path: Path) -> None:
     assert len(result["installed"]) == len(global_templates) + len(workspace_templates) + 2
     assert result["skipped"] == []
     assert result["mispointed"] == []
-    assert result["obsolete"] == []
-    assert result["removed"] == []
 
     for name in global_templates:
         content = (home / ".claude" / "commands" / name).read_text()
@@ -91,8 +89,6 @@ def test_skip_existing_without_force(tmp_path: Path) -> None:
     assert result["installed"] == []
     assert len(result["skipped"]) == len(_template_names("global")) + len(_template_names("workspace", "commands")) + 2
     assert result["mispointed"] == []
-    assert result["obsolete"] == []
-    assert result["removed"] == []
 
 
 def test_force_overwrites(tmp_path: Path) -> None:
@@ -106,8 +102,6 @@ def test_force_overwrites(tmp_path: Path) -> None:
     assert len(result["installed"]) == len(_template_names("global")) + len(_template_names("workspace", "commands")) + 2
     assert result["skipped"] == []
     assert result["mispointed"] == []
-    assert result["obsolete"] == []
-    assert result["removed"] == []
 
 
 def test_force_merges_existing_settings_local_json(tmp_path: Path) -> None:
@@ -205,71 +199,6 @@ def test_path_with_spaces_quoted_in_shell_commands(tmp_path: Path) -> None:
         for line in content.splitlines():
             if line.strip().startswith(("cd ", "`cd ")):
                 assert f'cd "{ws}"' in line, f"Unquoted path in shell command: {line}"
-
-
-def test_obsolete_managed_files_reported_without_force(tmp_path: Path) -> None:
-    ws = _make_workspace(tmp_path)
-    home = tmp_path / "home"
-    home.mkdir()
-
-    old_global = home / ".claude" / "commands"
-    old_global.mkdir(parents=True)
-    (old_global / "wiki-enrich.md").write_text("old")
-    (old_global / "wiki-query.md").write_text("old")
-    (old_global / "wiki-context.md").write_text("old")
-    old_workspace = ws / ".claude" / "commands"
-    old_workspace.mkdir(parents=True)
-    (old_workspace / "enrich.md").write_text("old")
-    (old_workspace / "query.md").write_text("old")
-    (old_workspace / "context.md").write_text("old")
-
-    result = install_claude_files(ws, home, force=False)
-
-    assert str(old_global / "wiki-enrich.md") in result["obsolete"]
-    assert str(old_global / "wiki-query.md") in result["obsolete"]
-    assert str(old_global / "wiki-context.md") in result["obsolete"]
-    assert str(old_workspace / "enrich.md") in result["obsolete"]
-    assert str(old_workspace / "query.md") in result["obsolete"]
-    assert str(old_workspace / "context.md") in result["obsolete"]
-    assert result["removed"] == []
-    assert (old_global / "wiki-enrich.md").exists()
-    assert (old_global / "wiki-query.md").exists()
-    assert (old_global / "wiki-context.md").exists()
-    assert (old_workspace / "enrich.md").exists()
-    assert (old_workspace / "query.md").exists()
-    assert (old_workspace / "context.md").exists()
-
-
-def test_force_removes_obsolete_managed_files(tmp_path: Path) -> None:
-    ws = _make_workspace(tmp_path)
-    home = tmp_path / "home"
-    home.mkdir()
-
-    old_global = home / ".claude" / "commands"
-    old_global.mkdir(parents=True)
-    (old_global / "wiki-enrich.md").write_text("old")
-    (old_global / "wiki-query.md").write_text("old")
-    (old_global / "wiki-context.md").write_text("old")
-    old_workspace = ws / ".claude" / "commands"
-    old_workspace.mkdir(parents=True)
-    (old_workspace / "enrich.md").write_text("old")
-    (old_workspace / "query.md").write_text("old")
-    (old_workspace / "context.md").write_text("old")
-
-    result = install_claude_files(ws, home, force=True)
-
-    assert str(old_global / "wiki-enrich.md") in result["removed"]
-    assert str(old_global / "wiki-query.md") in result["removed"]
-    assert str(old_global / "wiki-context.md") in result["removed"]
-    assert str(old_workspace / "enrich.md") in result["removed"]
-    assert str(old_workspace / "query.md") in result["removed"]
-    assert str(old_workspace / "context.md") in result["removed"]
-    assert not (old_global / "wiki-enrich.md").exists()
-    assert not (old_global / "wiki-query.md").exists()
-    assert not (old_global / "wiki-context.md").exists()
-    assert not (old_workspace / "enrich.md").exists()
-    assert not (old_workspace / "query.md").exists()
-    assert not (old_workspace / "context.md").exists()
 
 
 def test_no_obsolete_templates_installed(tmp_path: Path) -> None:
@@ -417,20 +346,3 @@ def test_cli_reports_mispointed(tmp_path: Path, monkeypatch: object) -> None:
     assert "--force" in result.output
 
 
-def test_cli_reports_obsolete_files(tmp_path: Path, monkeypatch: object) -> None:
-    ws = _make_workspace(tmp_path)
-    fake_home = tmp_path / "home"
-    fake_home.mkdir()
-    monkeypatch.setenv("HOME", str(fake_home))
-    global_dir = fake_home / ".claude" / "commands"
-    global_dir.mkdir(parents=True)
-    (global_dir / "wiki-enrich.md").write_text("old")
-    workspace_dir = ws / ".claude" / "commands"
-    workspace_dir.mkdir(parents=True)
-    (workspace_dir / "enrich.md").write_text("old")
-
-    runner = CliRunner()
-    result = runner.invoke(main, ["claude", "setup", str(ws)])
-
-    assert "Obsolete managed file(s) detected" in result.output
-    assert "Re-run with --force to remove them" in result.output
