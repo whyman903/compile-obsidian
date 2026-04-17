@@ -119,7 +119,6 @@ struct LauncherView: View {
     @State private var draftText: String = ""
     @State private var stagedFiles: [URL] = []
     @State private var isDropTargeted = false
-    @FocusState private var isDraftFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -142,24 +141,12 @@ struct LauncherView: View {
 
             actionRow
                 .padding(.horizontal, 24)
-                .padding(.bottom, 16)
-
-            Divider().overlay(EditorialPalette.border)
-
-            recentSection
-                .padding(.horizontal, 24)
-                .padding(.top, 16)
                 .padding(.bottom, 20)
         }
         .frame(width: 460)
         .background(backgroundLayer)
         .id("\(model.theme.rawValue).\(model.font.rawValue)")
         .preferredColorScheme(model.theme.prefersDarkMode ? .dark : .light)
-        .onAppear {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                isDraftFocused = true
-            }
-        }
         .alert("Install Advanced URI?", isPresented: $model.showGraphPluginInstallPrompt) {
             Button("Install") {
                 Task {
@@ -304,20 +291,21 @@ struct LauncherView: View {
             ZStack(alignment: .topLeading) {
                 if draftText.isEmpty {
                     Text(placeholderText)
-                        .font(.system(size: 15, design: activeFont.design).italic())
+                        .font(.system(size: 13).italic())
                         .foregroundStyle(EditorialPalette.textTertiary)
-                        .padding(.horizontal, 16)
-                        .padding(.top, 14)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
                         .allowsHitTesting(false)
                 }
-                TextEditor(text: $draftText)
-                    .focused($isDraftFocused)
-                    .scrollContentBackground(.hidden)
-                    .font(.system(size: 13))
-                    .foregroundStyle(EditorialPalette.textPrimary)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .frame(minHeight: 104, maxHeight: 160)
+                InsetlessTextEditor(
+                    text: $draftText,
+                    font: .systemFont(ofSize: 13),
+                    textColor: NSColor(EditorialPalette.textPrimary),
+                    autoFocus: true
+                )
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .frame(minHeight: 104, maxHeight: 160)
             }
             .background(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
@@ -348,6 +336,13 @@ struct LauncherView: View {
                 .buttonStyle(GhostButtonStyle())
 
                 Spacer()
+
+                Button(action: showQueryWindow) {
+                    Image(systemName: "arrow.up.forward.app")
+                        .font(.system(size: 13, weight: .medium))
+                }
+                .buttonStyle(GhostButtonStyle())
+                .help("Open MyWiki window")
 
                 Button(action: launch) {
                     HStack(spacing: 10) {
@@ -460,46 +455,75 @@ struct LauncherView: View {
         openWindow(id: "query-window")
         NSApplication.shared.activate(ignoringOtherApps: true)
     }
-
-    // MARK: - Recent section
-
-    private var recentSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("RECENT")
-                    .font(.system(size: 10, weight: .bold))
-                    .kerning(1.3)
-                    .foregroundStyle(EditorialPalette.textTertiary)
-                Spacer()
-                if !model.feedStore.items.isEmpty {
-                    Text("\(model.feedStore.items.count) total")
-                        .font(.system(size: 10))
-                        .foregroundStyle(EditorialPalette.textTertiary.opacity(0.75))
-                }
-            }
-
-            let recent = Array(model.feedStore.items.suffix(4).reversed())
-            if recent.isEmpty {
-                Text("Nothing dispatched yet.")
-                    .font(.system(size: 13, design: activeFont.design).italic())
-                    .foregroundStyle(EditorialPalette.textTertiary)
-                    .padding(.vertical, 6)
-            } else {
-                VStack(spacing: 0) {
-                    ForEach(Array(recent.enumerated()), id: \.element.id) { offset, item in
-                        RecentRow(item: item) { model.openFeedItem(item) }
-                        if offset < recent.count - 1 {
-                            Divider()
-                                .overlay(EditorialPalette.border)
-                        }
-                    }
-                }
-            }
-        }
-    }
 }
 
 // MARK: - Subviews
+
+private struct InsetlessTextEditor: NSViewRepresentable {
+    @Binding var text: String
+    let font: NSFont
+    let textColor: NSColor
+    var autoFocus: Bool = false
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSTextView.scrollableTextView()
+        scrollView.drawsBackground = false
+        scrollView.borderType = .noBorder
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = true
+
+        guard let textView = scrollView.documentView as? NSTextView else {
+            return scrollView
+        }
+        textView.delegate = context.coordinator
+        textView.isRichText = false
+        textView.allowsUndo = true
+        textView.drawsBackground = false
+        textView.backgroundColor = .clear
+        textView.textContainerInset = .zero
+        textView.textContainer?.lineFragmentPadding = 0
+        textView.font = font
+        textView.textColor = textColor
+        textView.insertionPointColor = textColor
+        textView.string = text
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.isAutomaticTextReplacementEnabled = false
+        textView.isAutomaticSpellingCorrectionEnabled = false
+        textView.smartInsertDeleteEnabled = false
+
+        if autoFocus {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                textView.window?.makeFirstResponder(textView)
+            }
+        }
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        guard let textView = scrollView.documentView as? NSTextView else { return }
+        if textView.string != text {
+            textView.string = text
+        }
+        if textView.font != font { textView.font = font }
+        if textView.textColor != textColor {
+            textView.textColor = textColor
+            textView.insertionPointColor = textColor
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        @Binding var text: String
+        init(text: Binding<String>) { self._text = text }
+        func textDidChange(_ notification: Notification) {
+            guard let tv = notification.object as? NSTextView else { return }
+            text = tv.string
+        }
+    }
+}
 
 private struct FileChip: View {
     let url: URL
@@ -622,7 +646,6 @@ private struct EditorialSpinner: View {
 }
 
 struct ObsidianMark: View {
-    var color: Color = EditorialPalette.textSecondary
     var size: CGFloat = 15
     var lineWidth: CGFloat = 1.3
 
@@ -638,83 +661,17 @@ struct ObsidianMark: View {
                 p.addLine(to: CGPoint(x: w * 0.06, y: h * 0.38))
                 p.closeSubpath()
             }
-            .stroke(
-                color,
-                style: StrokeStyle(lineWidth: lineWidth, lineJoin: .round)
-            )
+            .stroke(style: StrokeStyle(lineWidth: lineWidth, lineJoin: .round))
 
             Path { p in
                 p.move(to: CGPoint(x: w * 0.5,  y: h * 0.04))
                 p.addLine(to: CGPoint(x: w * 0.34, y: h * 0.58))
                 p.addLine(to: CGPoint(x: w * 0.66, y: h * 0.96))
             }
-            .stroke(
-                color.opacity(0.65),
-                style: StrokeStyle(lineWidth: lineWidth * 0.85, lineJoin: .round)
-            )
+            .stroke(style: StrokeStyle(lineWidth: lineWidth * 0.85, lineJoin: .round))
+            .opacity(0.65)
         }
         .frame(width: w, height: h)
-    }
-}
-
-private struct RecentRow: View {
-    let item: FeedItem
-    let action: () -> Void
-
-    @State private var isHovering = false
-
-    var body: some View {
-        Button(action: action) {
-            HStack(alignment: .top, spacing: 10) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(primaryLine)
-                        .font(.system(size: 13, design: activeFont.design))
-                        .foregroundStyle(EditorialPalette.textPrimary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                    Text(secondaryLine)
-                        .font(.system(size: 10))
-                        .foregroundStyle(secondaryColor)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-                Spacer(minLength: 8)
-                Text(relativeTime)
-                    .font(.system(size: 10))
-                    .foregroundStyle(EditorialPalette.textTertiary)
-            }
-            .padding(.horizontal, 4)
-            .padding(.vertical, 9)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-            .background(
-                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                    .fill(isHovering ? EditorialPalette.surfaceHover.opacity(0.5) : .clear)
-            )
-        }
-        .buttonStyle(.plain)
-        .onHover { isHovering = $0 }
-    }
-
-    private var primaryLine: String {
-        item.prompt ?? item.source
-    }
-
-    private var secondaryLine: String {
-        if item.status == .failed, let error = item.errorMessage {
-            return error
-        }
-        return item.source
-    }
-
-    private var secondaryColor: Color {
-        item.status == .failed ? EditorialPalette.warning : EditorialPalette.textTertiary
-    }
-
-    private var relativeTime: String {
-        let formatter = RelativeDateTimeFormatter()
-        formatter.unitsStyle = .abbreviated
-        return formatter.localizedString(for: item.createdAt, relativeTo: Date())
     }
 }
 
