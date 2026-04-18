@@ -31,13 +31,6 @@ struct QueryDetailView: View {
         .background(EditorialPalette.background)
         .id("\(model.theme.rawValue).\(model.font.rawValue)")
         .preferredColorScheme(model.theme.prefersDarkMode ? .dark : .light)
-        .environment(\.openURL, OpenURLAction { url in
-            if let target = WikilinkParser.decodeLinkURL(url) {
-                model.openWikiPage(target: target)
-                return .handled
-            }
-            return .systemAction
-        })
         .alert("Install Advanced URI?", isPresented: $model.showGraphPluginInstallPrompt) {
             Button("Install") {
                 Task {

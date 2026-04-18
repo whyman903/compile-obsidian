@@ -20,12 +20,19 @@ final class QuerySessionTests: XCTestCase {
     func testHandleFinishedEventTransitionsToCompleted() {
         let session = QuerySession()
         session.start(question: "q")
-        session.handle(.finished(text: "answer", costUSD: 0.05, durationMs: 1234, permissionDenials: []))
+        session.handle(.finished(
+            text: "answer",
+            costUSD: 0.05,
+            durationMs: 1234,
+            permissionDenials: [],
+            sessionID: "claude-session-1"
+        ))
 
         XCTAssertEqual(session.status, .completed)
         XCTAssertEqual(session.assistantText, "answer")
         XCTAssertEqual(session.costUSD, 0.05)
         XCTAssertEqual(session.durationMs, 1234)
+        XCTAssertEqual(session.claudeSessionID, "claude-session-1")
     }
 
     func testHandleFailedEventTransitionsToFailed() {
@@ -48,7 +55,13 @@ final class QuerySessionTests: XCTestCase {
     func testClearResetsSessionToIdle() {
         let session = QuerySession()
         session.start(question: "q")
-        session.handle(.finished(text: "done", costUSD: nil, durationMs: nil, permissionDenials: []))
+        session.handle(.finished(
+            text: "done",
+            costUSD: nil,
+            durationMs: nil,
+            permissionDenials: [],
+            sessionID: nil
+        ))
         session.clear()
         XCTAssertEqual(session.status, .idle)
         XCTAssertEqual(session.assistantText, "")

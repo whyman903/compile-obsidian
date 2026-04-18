@@ -15,6 +15,7 @@ from compile.dates import now_frontmatter
 from compile.fetch import fetch_url
 from compile.ingest import (
     build_ingest_artifact,
+    render_full_text_callout,
     render_source_body,
 )
 from compile.obsidian import ObsidianConnector
@@ -25,6 +26,7 @@ from compile.pdf_artifacts import (
     compute_sha256,
     extracted_source_from_artifact,
     load_pdf_artifact,
+    load_pdf_artifact_path,
     save_pdf_artifact,
 )
 from compile.resources import resource_path
@@ -1453,6 +1455,8 @@ def install_claude_files(
         dest.write_text(template_file.read_text())
         installed.append(str(dest))
 
+    _sync_existing_pdf_full_text_callouts(load_config(wiki_path))
+
     return {
         "installed": installed,
         "skipped": skipped,
@@ -1542,6 +1546,8 @@ def _should_preserve_existing_source_page(page) -> bool:
 
 def _refresh_pdf_index_for_source_page(config, *, raw_path: Path, raw_relative: str, page) -> None:
     _, pdf_artifact = _extract_for_ingest(config, raw_path, raw_relative)
+    if pdf_artifact is not None:
+        _ensure_source_note_full_text_callout(config, page, pdf_artifact)
     sync_pdf_search_index(
         config,
         raw_relative=raw_relative,
@@ -1551,6 +1557,49 @@ def _refresh_pdf_index_for_source_page(config, *, raw_path: Path, raw_relative: 
         page_type=page.page_type,
         page_summary=str(page.frontmatter.get("summary") or ""),
     )
+
+
+def _sync_existing_pdf_full_text_callouts(config) -> int:
+    if not config.extract_dir.is_dir():
+        return 0
+
+    connector = ObsidianConnector(config.workspace_root)
+    updated = 0
+    for artifact_path in sorted(config.extract_dir.glob("*.json")):
+        try:
+            artifact = load_pdf_artifact_path(artifact_path)
+        except (json.JSONDecodeError, ValueError, OSError):
+            continue
+        try:
+            source_page = connector.find_source_page_by_raw_path(artifact.raw_path)
+        except ValueError:
+            source_page = None
+        if source_page is not None:
+            if _ensure_source_note_full_text_callout(config, source_page, artifact):
+                updated += 1
+    return updated
+
+
+def _ensure_source_note_full_text_callout(config, page, artifact) -> bool:
+    note_path = config.workspace_root / page.relative_path
+    try:
+        text = note_path.read_text()
+    except OSError:
+        return False
+
+    marker = "> [!abstract]- Full extracted text"
+    if any(line == marker for line in text.splitlines()):
+        return False
+
+    extracted = extracted_source_from_artifact(artifact)
+    full_text = extracted.normalized_text.strip()
+    if not full_text:
+        return False
+
+    note_path.write_text(
+        text.rstrip() + "\n\n" + render_full_text_callout(full_text) + "\n"
+    )
+    return True
 
 
 def _coerce_frontmatter_list(value) -> list[str]:

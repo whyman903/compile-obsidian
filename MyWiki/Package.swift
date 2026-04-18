@@ -11,7 +11,7 @@ let package = Package(
         .executable(name: "MyWiki", targets: ["MyWikiApp"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/gonzalezreal/swift-markdown-ui", exact: "2.4.1"),
+        .package(url: "https://github.com/swiftlang/swift-cmark", exact: "0.7.1"),
     ],
     targets: [
         .target(
@@ -22,7 +22,8 @@ let package = Package(
             name: "MyWikiApp",
             dependencies: [
                 "MyWikiCore",
-                .product(name: "MarkdownUI", package: "swift-markdown-ui"),
+                .product(name: "cmark-gfm", package: "swift-cmark"),
+                .product(name: "cmark-gfm-extensions", package: "swift-cmark"),
             ],
             path: "Sources/MyWikiApp",
             resources: [.copy("Resources/AppIcon.icns")]

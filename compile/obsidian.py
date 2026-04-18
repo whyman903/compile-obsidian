@@ -23,6 +23,17 @@ from compile.page_types import (
 )
 
 
+_STRONG_LOCATOR_REASONS = frozenset({
+    "exact-title",
+    "exact-alias",
+    "title-match",
+    "alias-match",
+    "path-match",
+})
+
+_NAV_DOWNRANK_EXEMPT_REASONS = _STRONG_LOCATOR_REASONS | {"summary-match"}
+
+
 IGNORED_DIRS = {
     ".compile",
     ".git",
@@ -1048,8 +1059,7 @@ class ObsidianConnector:
     def _is_high_confidence_locator_hit(self, hit: SearchHit) -> bool:
         if hit.score < 70:
             return False
-        strong_reasons = {"exact-title", "exact-alias", "title-match", "alias-match", "path-match"}
-        return any(reason in strong_reasons for reason in hit.reasons)
+        return any(reason in _STRONG_LOCATOR_REASONS for reason in hit.reasons)
 
     def _is_competing_locator_hit(self, top_hit: SearchHit, next_hit: SearchHit) -> bool:
         if next_hit.score <= 0:
@@ -1114,6 +1124,12 @@ class ObsidianConnector:
             if all(term in page.summary_terms or term in page.body_lower for term in query_terms):
                 score += 12
                 reasons.append("all-terms")
+
+        if page.page_type in NAV_PAGE_TYPES and not any(
+            reason in _NAV_DOWNRANK_EXEMPT_REASONS for reason in reasons
+        ):
+            score = max(1, int(score * 0.4))
+            reasons.append("nav-downranked")
 
         # Reward pages with a meaningful graph footprint when scores tie.
         score += min(len(page.resolved_outbound_links) + len(page.inbound_links), 6)

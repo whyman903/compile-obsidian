@@ -23,21 +23,9 @@ private struct WorkspaceEnvelope: CommandEnvelope {
     let error: String?
 }
 
-private struct SearchEnvelope: CommandEnvelope {
-    let ok: Bool
-    let hits: [SearchHit]?
-    let error: String?
-}
-
 private struct PageEnvelope: CommandEnvelope {
     let ok: Bool
     let page: WikiPage?
-    let error: String?
-}
-
-private struct NeighborhoodEnvelope: CommandEnvelope {
-    let ok: Bool
-    let neighborhood: WikiNeighborhood?
     let error: String?
 }
 
@@ -91,13 +79,6 @@ public final class CompileRunner: CompileRunning, @unchecked Sendable {
         try await runPlainCommand(arguments: arguments)
     }
 
-    public func search(query: String, at path: URL, limit: Int = 5) async throws -> [SearchHit] {
-        let envelope: SearchEnvelope = try await runEnvelopeCommand(
-            arguments: ["obsidian", "search", query, "--path", path.path, "--limit", "\(limit)", "--json-output"]
-        )
-        return envelope.hits ?? []
-    }
-
     public func page(locator: String, at path: URL) async throws -> WikiPage {
         let envelope: PageEnvelope = try await runEnvelopeCommand(
             arguments: ["obsidian", "page", locator, "--path", path.path, "--json-output"]
@@ -106,16 +87,6 @@ public final class CompileRunner: CompileRunning, @unchecked Sendable {
             throw CompileCommandError("Sidecar returned no page payload.")
         }
         return page
-    }
-
-    public func neighbors(locator: String, at path: URL) async throws -> WikiNeighborhood {
-        let envelope: NeighborhoodEnvelope = try await runEnvelopeCommand(
-            arguments: ["obsidian", "neighbors", locator, "--path", path.path, "--json-output"]
-        )
-        guard let neighborhood = envelope.neighborhood else {
-            throw CompileCommandError("Sidecar returned no neighborhood payload.")
-        }
-        return neighborhood
     }
 
     public func ingest(

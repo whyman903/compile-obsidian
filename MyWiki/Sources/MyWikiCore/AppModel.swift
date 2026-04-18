@@ -201,48 +201,33 @@ public final class AppModel {
         let workspaceURL = workspace.url
         let session = querySession
         let claudeRunner = queryRunner
-        let compileRunner = runner
         let log = logger
 
         activeQueryTask = Task { [weak self] in
             log.log("sendQuery: starting query — \"\(trimmed.prefix(60))\"")
 
-            // Phase 1: Pre-fetch wiki context
-            var wikiContext = ""
-            do {
-                wikiContext = try await Self.loadWikiContext(
-                    query: trimmed,
-                    workspaceURL: workspaceURL,
-                    runner: compileRunner,
-                    session: session,
-                    logger: log,
-                    logPrefix: "sendQuery"
-                )
-            } catch is CancellationError {
-                await MainActor.run { session.cancel() }
-                await MainActor.run { [weak self] in self?.activeQueryTask = nil }
-                return
-            } catch {
-                log.log("Wiki search failed, proceeding without context: \(error)")
-            }
-
-            // Phase 2: Ask Claude with pre-fetched context
             await MainActor.run { session.updateStatusDetail("Asking Claude…") }
-            let prompt = wikiContext.isEmpty ? trimmed : "\(wikiContext)\n\n\(trimmed)"
 
             do {
                 try await claudeRunner.runQuery(
-                    prompt: prompt,
+                    prompt: trimmed,
                     workspaceURL: workspaceURL,
+                    resumeSessionID: nil,
                     onEvent: { event in
                         await MainActor.run {
                             switch event {
                             case .assistantText(let t):
                                 log.log("sendQuery: got assistantText (\(t.count) chars)")
-                            case .finished(let t, let c, _, _):
+                            case .finished(let t, let c, _, _, let sessionID):
                                 log.log("sendQuery: got finished — text=\(t.count) chars, cost=\(c ?? -1)")
+                                if let sessionID {
+                                    log.log("sendQuery: Claude session id=\(sessionID)")
+                                }
                             case .failed(let m):
                                 log.log("sendQuery: got failed — \(m)")
+                                if let feedItemID {
+                                    self?.feedStore.markFailed(id: feedItemID, message: m)
+                                }
                             default:
                                 break
                             }
@@ -253,6 +238,9 @@ public final class AppModel {
                 await MainActor.run { [weak self] in
                     log.log("sendQuery: runQuery returned — status=\(session.status), text=\(session.assistantText.count) chars")
                     Self.finishCompletedClaudeRunIfNeeded(session, logger: log, context: "sendQuery")
+                    if session.status == .failed, let feedItemID {
+                        self?.feedStore.markFailed(id: feedItemID, message: session.errorMessage ?? "Query completed without a final response")
+                    }
                     self?.saveCurrentSession()
                 }
             } catch is CancellationError {
@@ -283,8 +271,8 @@ public final class AppModel {
         querySession = QuerySession()
     }
 
-    /// Send a follow-up question in the current conversation. Re-searches the wiki
-    /// with the new question and includes prior turns as conversation history.
+    /// Send a follow-up question in the current Claude conversation when a
+    /// session id is available; legacy text-only history starts a fresh agent context.
     public func sendFollowUp(_ question: String) {
         guard let workspace else {
             lastError = "Workspace is not ready yet."
@@ -299,51 +287,45 @@ public final class AppModel {
         let workspaceURL = workspace.url
         let session = querySession
         let claudeRunner = queryRunner
-        let compileRunner = runner
         let log = logger
-
-        let history = session.turns.map { "Q: \($0.question)\nA: \($0.answer)" }
-            .joined(separator: "\n\n")
+        let resumeSessionID = session.claudeSessionID
+        let priorTurns = session.turns
 
         activeQueryTask = Task { [weak self] in
             log.log("sendFollowUp: follow-up — \"\(trimmed.prefix(60))\"")
-
-            var wikiContext = ""
-            do {
-                wikiContext = try await Self.loadWikiContext(
-                    query: trimmed,
-                    workspaceURL: workspaceURL,
-                    runner: compileRunner,
-                    session: session,
-                    logger: log,
-                    logPrefix: "sendFollowUp"
-                )
-            } catch is CancellationError {
-                await MainActor.run { session.cancel() }
-                await MainActor.run { [weak self] in self?.activeQueryTask = nil }
-                return
-            } catch {
-                log.log("Wiki search failed for follow-up, proceeding without context: \(error)")
+            if resumeSessionID == nil {
+                log.log("sendFollowUp: no Claude session id available; starting a fresh agent context")
             }
 
             await MainActor.run { session.updateStatusDetail("Asking Claude…") }
-            var prompt = ""
-            if !history.isEmpty {
-                prompt += "<conversation-history>\n\(history)\n</conversation-history>\n\n"
-            }
-            if !wikiContext.isEmpty {
-                prompt += "\(wikiContext)\n\n"
-            }
-            prompt += trimmed
 
             do {
-                try await claudeRunner.runQuery(
-                    prompt: prompt,
-                    workspaceURL: workspaceURL,
-                    onEvent: { event in
-                        await MainActor.run { session.handle(event) }
+                do {
+                    try await claudeRunner.runQuery(
+                        prompt: trimmed,
+                        workspaceURL: workspaceURL,
+                        resumeSessionID: resumeSessionID,
+                        onEvent: { event in
+                            await MainActor.run { session.handle(event) }
+                        }
+                    )
+                } catch let resumeError as ClaudeQueryResumeUnavailableError where resumeSessionID != nil {
+                    log.log("sendFollowUp: Claude resume failed — \(resumeError.message)")
+                    await MainActor.run {
+                        session.updateStatusDetail("Claude session expired; searching again…")
                     }
-                )
+                    try await claudeRunner.runQuery(
+                        prompt: Self.followUpPromptWithPriorResearchHint(
+                            question: trimmed,
+                            priorTurns: priorTurns
+                        ),
+                        workspaceURL: workspaceURL,
+                        resumeSessionID: nil,
+                        onEvent: { event in
+                            await MainActor.run { session.handle(event) }
+                        }
+                    )
+                }
                 await MainActor.run { [weak self] in
                     Self.finishCompletedClaudeRunIfNeeded(session, logger: log, context: "sendFollowUp")
                     self?.saveCurrentSession()
@@ -361,12 +343,42 @@ public final class AppModel {
         }
     }
 
+    private static func followUpPromptWithPriorResearchHint(
+        question: String,
+        priorTurns: [QueryTurn]
+    ) -> String {
+        var seen: Set<String> = []
+        var links: [String] = []
+        for turn in priorTurns {
+            for run in WikilinkParser.parse(turn.answer) {
+                guard case .link(let target, _) = run else { continue }
+                let trimmed = target.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { continue }
+                let key = trimmed.lowercased()
+                guard !seen.contains(key) else { continue }
+                seen.insert(key)
+                links.append(trimmed)
+            }
+        }
+
+        if !links.isEmpty {
+            let cited = links.prefix(8).map { "[[\($0)]]" }.joined(separator: ", ")
+            return "Prior research covered: \(cited).\n\n\(question)"
+        }
+
+        return """
+        The previous Claude tool context is no longer available. Answer this follow-up from a fresh read-only wiki search.
+
+        \(question)
+        """
+    }
+
     public func selectHistorySession(_ record: QueryHistoryRecord) {
         activeQueryTask?.cancel()
         activeQueryTask = nil
         archiveSessionIfNeeded()
         let session = QuerySession(id: record.id)
-        session.restore(turns: record.turns)
+        session.restore(turns: record.turns, claudeSessionID: record.claudeSessionID)
         querySession = session
     }
 
@@ -380,12 +392,20 @@ public final class AppModel {
     /// Persist the current session into history immediately (called after each completed query).
     private func saveCurrentSession() {
         guard !querySession.turns.isEmpty else { return }
-        upsertHistoryRecord(QueryHistoryRecord(id: querySession.id, turns: querySession.turns))
+        upsertHistoryRecord(QueryHistoryRecord(
+            id: querySession.id,
+            turns: querySession.turns,
+            claudeSessionID: querySession.claudeSessionID
+        ))
     }
 
     private func archiveSessionIfNeeded() {
         guard !querySession.turns.isEmpty else { return }
-        upsertHistoryRecord(QueryHistoryRecord(id: querySession.id, turns: querySession.turns))
+        upsertHistoryRecord(QueryHistoryRecord(
+            id: querySession.id,
+            turns: querySession.turns,
+            claudeSessionID: querySession.claudeSessionID
+        ))
     }
 
     private var historyFileURL: URL? {
@@ -405,18 +425,8 @@ public final class AppModel {
         context: String
     ) {
         guard session.status == .running else { return }
-        let trimmed = session.assistantText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmed.isEmpty {
-            logger.log("\(context): Claude exited without a result event; completing from streamed assistant text")
-            session.handle(.finished(
-                text: session.assistantText,
-                costUSD: nil,
-                durationMs: nil,
-                permissionDenials: []
-            ))
-            return
-        }
-        session.fail("Query completed without a response")
+        logger.log("\(context): Claude runner returned without a terminal event")
+        session.fail("Query completed without a final response")
     }
 
     private func normalizedHistory(_ records: [QueryHistoryRecord]) -> [QueryHistoryRecord] {
@@ -772,121 +782,6 @@ public final class AppModel {
     private func defaultWorkspaceURL() -> URL {
         fileManager.homeDirectoryForCurrentUser
             .appending(path: "wiki", directoryHint: .isDirectory)
-    }
-
-    private static let querySearchLimit = 10
-    private static let querySourceExpansionLimit = 8
-    private static let regularPageContextCharacterLimit = 8_000
-
-    private static func loadWikiContext(
-        query: String,
-        workspaceURL: URL,
-        runner: CompileRunning,
-        session: QuerySession,
-        logger: AppLogger,
-        logPrefix: String
-    ) async throws -> String {
-        await MainActor.run { session.updateStatusDetail("Searching wiki…") }
-        let hits = try await runner.search(query: query, at: workspaceURL, limit: Self.querySearchLimit)
-        logger.log("\(logPrefix): search returned \(hits.count) hits")
-        guard !hits.isEmpty else { return "" }
-
-        await MainActor.run { session.updateStatusDetail("Reading pages…") }
-        var pages: [WikiPage] = []
-        var seenPaths: Set<String> = []
-        var expandedSourceCount = 0
-
-        func appendPage(_ page: WikiPage) {
-            guard !seenPaths.contains(page.relativePath) else { return }
-            seenPaths.insert(page.relativePath)
-            pages.append(page)
-        }
-
-        for hit in hits {
-            guard let page = try? await runner.page(locator: hit.relativePath, at: workspaceURL) else {
-                continue
-            }
-            appendPage(page)
-
-            guard page.pageType.lowercased() != "source",
-                  expandedSourceCount < Self.querySourceExpansionLimit else {
-                continue
-            }
-
-            let neighborhood: WikiNeighborhood
-            do {
-                neighborhood = try await runner.neighbors(locator: page.relativePath, at: workspaceURL)
-            } catch {
-                logger.log("\(logPrefix): neighbors failed for \(page.relativePath): \(error)")
-                continue
-            }
-
-            let sourceLocators = orderedUnique(
-                neighborhood.supportingSourcePages + neighborhood.citedSourcePages
-            )
-            guard !sourceLocators.isEmpty else { continue }
-
-            await MainActor.run { session.updateStatusDetail("Reading source notes…") }
-            for locator in sourceLocators {
-                guard expandedSourceCount < Self.querySourceExpansionLimit else { break }
-                guard let sourcePage = try? await runner.page(locator: locator, at: workspaceURL) else {
-                    continue
-                }
-                guard sourcePage.pageType.lowercased() == "source" else { continue }
-                let beforeCount = pages.count
-                appendPage(sourcePage)
-                if pages.count > beforeCount {
-                    expandedSourceCount += 1
-                }
-            }
-        }
-
-        let context = Self.assembleWikiContext(pages)
-        logger.log(
-            "\(logPrefix): assembled context from \(pages.count) pages " +
-            "(\(expandedSourceCount) expanded sources, \(context.count) chars)"
-        )
-        return context
-    }
-
-    private static func orderedUnique(_ values: [String]) -> [String] {
-        var seen: Set<String> = []
-        var result: [String] = []
-        for value in values {
-            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { continue }
-            let key = trimmed.lowercased()
-            guard !seen.contains(key) else { continue }
-            seen.insert(key)
-            result.append(trimmed)
-        }
-        return result
-    }
-
-    private static func assembleWikiContext(_ pages: [WikiPage]) -> String {
-        guard !pages.isEmpty else { return "" }
-        var sections: [String] = []
-        for page in pages {
-            var section = "## \(page.title)"
-            section += "\nPath: \(page.relativePath)"
-            section += "\nType: \(page.pageType)"
-            if let summary = page.summary, !summary.isEmpty {
-                section += "\nSummary: \(summary)"
-            }
-            if let body = page.body, !body.isEmpty {
-                if page.pageType.lowercased() == "source" {
-                    section += "\n\n\(body)"
-                } else {
-                    let truncated = String(body.prefix(Self.regularPageContextCharacterLimit))
-                    section += "\n\n\(truncated)"
-                    if body.count > Self.regularPageContextCharacterLimit {
-                        section += "\n[truncated after \(Self.regularPageContextCharacterLimit) characters]"
-                    }
-                }
-            }
-            sections.append(section)
-        }
-        return "<wiki-context>\n\(sections.joined(separator: "\n\n"))\n</wiki-context>"
     }
 
     private func urlOnlyRequest(from text: String) -> IngestRequest? {

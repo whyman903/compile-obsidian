@@ -42,9 +42,9 @@ final class SidecarIntegrationTests: XCTestCase {
         return bundled
     }
 
-    /// Verifies that the compile-bin surface MyWiki still relies on (init / status / search / page)
+    /// Verifies that the compile-bin surface MyWiki still relies on (init / status / page)
     /// returns the JSON shapes the Swift decoders expect.
-    func testWorkspaceBootstrapAndSearchViaRealSidecar() async throws {
+    func testWorkspaceBootstrapAndPageViaRealSidecar() async throws {
         let sidecar = try sidecarURL()
         let logger = AppLogger(logDirectory: tempDirectory.appending(path: "logs"))
         let runner = CompileRunner(logger: logger) { sidecar }
@@ -78,19 +78,10 @@ final class SidecarIntegrationTests: XCTestCase {
         let status = try await runner.status(at: URL(fileURLWithPath: info.path, isDirectory: true))
         XCTAssertGreaterThan(status.wikiPageCount, info.wikiPageCount)
 
-        let hits = try await runner.search(
-            query: "kumquat",
-            at: URL(fileURLWithPath: info.path, isDirectory: true),
-            limit: 5
+        let page = try await runner.page(
+            locator: "wiki/sources/Integration Memo.md",
+            at: URL(fileURLWithPath: info.path, isDirectory: true)
         )
-        XCTAssertFalse(hits.isEmpty, "Search should return hits for ingested content")
-
-        if let firstHit = hits.first {
-            let page = try await runner.page(
-                locator: firstHit.relativePath,
-                at: URL(fileURLWithPath: info.path, isDirectory: true)
-            )
-            XCTAssertFalse(page.title.isEmpty)
-        }
+        XCTAssertEqual(page.title, "Integration Memo")
     }
 }

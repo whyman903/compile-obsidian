@@ -1,7 +1,4 @@
 import Foundation
-#if canImport(SwiftUI)
-import SwiftUI
-#endif
 
 public enum WikilinkRun: Equatable, Sendable {
     case text(String)
@@ -73,27 +70,4 @@ public enum WikilinkParser {
             .first(where: { $0.name == "target" })?
             .value
     }
-
-    #if canImport(SwiftUI)
-    /// Produce an AttributedString where wikilinks carry a `mywiki://page?target=...`
-    /// URL. Renderers can intercept via `OpenURLAction` to route clicks to Obsidian.
-    public static func attributedString(_ text: String) -> AttributedString {
-        var result = AttributedString()
-        for run in parse(text) {
-            switch run {
-            case .text(let str):
-                result += AttributedString(str)
-            case .link(let target, let display):
-                var part = AttributedString(display)
-                part.foregroundColor = Color(red: 0.4, green: 0.9, blue: 1.0)
-                part.underlineStyle = .single
-                if let url = linkURL(for: target) {
-                    part.link = url
-                }
-                result += part
-            }
-        }
-        return result
-    }
-    #endif
 }

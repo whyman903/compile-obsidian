@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from click.testing import CliRunner
@@ -74,8 +75,57 @@ def test_fresh_install(tmp_path: Path) -> None:
     assert '"mcp__notion"' in settings_content
     assert '"Edit(raw/notion/**)"' in settings_content
     assert '"Bash(compile health)"' in settings_content
+    assert '"Bash(compile status*)"' not in settings_content
+    assert '"Bash(compile health*)"' not in settings_content
+    assert ".compile/mywiki-bin/compile status --path . --json-output" in settings_content
     for name in workspace_templates:
         assert (ws / ".claude" / "commands" / name).exists()
+
+
+def test_setup_backfills_existing_pdf_fulltext_callouts(tmp_path: Path) -> None:
+    ws = _make_workspace(tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+
+    raw_sha = "a" * 64
+    extract_dir = ws / ".compile" / "extract"
+    extract_dir.mkdir(parents=True)
+    (extract_dir / f"{raw_sha}.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "raw_path": "raw/paper.pdf",
+                "raw_sha256": raw_sha,
+                "media_type": "application/pdf",
+                "extractor_name": "pymupdf_text",
+                "extractor_version": "1.27.2.2",
+                "extracted_at": "2026-01-01T00:00:00+00:00",
+                "extraction_mode": "text",
+                "requires_document_review": True,
+                "warnings": [],
+                "pages": [{"page_number": 1, "text": "Backfilled full text."}],
+            }
+        )
+    )
+    source_path = ws / "wiki" / "sources" / "Paper.md"
+    source_path.write_text(
+        "---\n"
+        "title: Paper\n"
+        "type: source\n"
+        "sources:\n"
+        "- raw/paper.pdf\n"
+        "---\n\n"
+        "# Paper\n\n"
+        "## Provenance\n\n"
+        "- Source file: ![[raw/paper.pdf]]\n"
+    )
+
+    install_claude_files(ws, home, force=False)
+
+    content = source_path.read_text()
+    assert "> [!abstract]- Full extracted text" in content
+    assert "> Backfilled full text." in content
+    assert not (ws / "extracted" / f"{raw_sha}.txt").exists()
 
 
 def test_skip_existing_without_force(tmp_path: Path) -> None:
@@ -141,7 +191,7 @@ def test_force_merges_existing_settings_local_json(tmp_path: Path) -> None:
     assert '"Bash(custom command)"' in merged
     assert '"mcp__notion"' in merged
     assert '"matcher": "custom"' in merged
-    assert "No wiki index found." in merged
+    assert ".compile/mywiki-bin/compile status --path . --json-output" in merged
 
 
 def test_mispointed_globals_detected(tmp_path: Path) -> None:
@@ -344,5 +394,3 @@ def test_cli_reports_mispointed(tmp_path: Path, monkeypatch: object) -> None:
 
     assert "point at a different wiki" in result.output
     assert "--force" in result.output
-
-

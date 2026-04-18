@@ -19,15 +19,22 @@ public struct QueryTurn: Identifiable, Codable, Equatable, Sendable {
 public struct QueryHistoryRecord: Identifiable, Codable, Equatable, Sendable {
     public let id: UUID
     public let turns: [QueryTurn]
+    public let claudeSessionID: String?
     public let archivedAt: Date
 
     public var firstQuestion: String {
         turns.first?.question ?? ""
     }
 
-    public init(id: UUID = UUID(), turns: [QueryTurn], archivedAt: Date = Date()) {
+    public init(
+        id: UUID = UUID(),
+        turns: [QueryTurn],
+        claudeSessionID: String? = nil,
+        archivedAt: Date = Date()
+    ) {
         self.id = id
         self.turns = turns
+        self.claudeSessionID = claudeSessionID
         self.archivedAt = archivedAt
     }
 }
@@ -55,6 +62,7 @@ public final class QuerySession: Identifiable {
     public private(set) var startedAt: Date?
     public private(set) var statusDetail: String = ""
     public private(set) var turns: [QueryTurn] = []
+    public private(set) var claudeSessionID: String?
 
     public var firstQuestion: String {
         turns.first?.question ?? question
@@ -76,6 +84,7 @@ public final class QuerySession: Identifiable {
         self.startedAt = Date()
         self.statusDetail = ""
         self.turns = []
+        self.claudeSessionID = nil
     }
 
     public func startFollowUp(question: String) {
@@ -111,13 +120,16 @@ public final class QuerySession: Identifiable {
             }
         case .toolResult:
             break
-        case .finished(let text, let cost, let duration, let denials):
+        case .finished(let text, let cost, let duration, let denials, let sessionID):
             if !text.isEmpty {
                 self.assistantText = text
             }
             self.costUSD = cost
             self.durationMs = duration
             self.permissionDenials = denials
+            if let sessionID, !sessionID.isEmpty {
+                self.claudeSessionID = sessionID
+            }
             self.turns.append(QueryTurn(
                 question: self.question,
                 answer: self.assistantText,
@@ -136,11 +148,12 @@ public final class QuerySession: Identifiable {
     }
 
     public func cancel() {
+        // A cancelled Claude process may not emit a result event, so there may be no session id to resume.
         self.status = .cancelled
     }
 
     /// Restore a session from saved history.
-    public func restore(turns: [QueryTurn]) {
+    public func restore(turns: [QueryTurn], claudeSessionID: String? = nil) {
         self.turns = turns
         self.toolCalls = []
         self.errorMessage = nil
@@ -149,6 +162,7 @@ public final class QuerySession: Identifiable {
         self.permissionDenials = []
         self.startedAt = nil
         self.statusDetail = ""
+        self.claudeSessionID = claudeSessionID
         if let last = turns.last {
             self.question = last.question
             self.assistantText = last.answer
@@ -172,5 +186,6 @@ public final class QuerySession: Identifiable {
         self.startedAt = nil
         self.statusDetail = ""
         self.turns = []
+        self.claudeSessionID = nil
     }
 }

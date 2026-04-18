@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from compile.ingest import render_full_text_callout
 from compile.text import (
     extract_source,
     extract_text,
@@ -57,6 +58,15 @@ class TestSlugify:
 
     def test_leading_trailing_hyphens_stripped(self) -> None:
         assert slugify("--hello--") == "hello"
+
+
+def test_render_full_text_callout_prefixes_every_line() -> None:
+    assert render_full_text_callout("First paragraph.\n\nSecond paragraph.") == (
+        "> [!abstract]- Full extracted text\n"
+        "> First paragraph.\n"
+        ">\n"
+        "> Second paragraph."
+    )
 
 
 class TestSanitizeRawFilename:

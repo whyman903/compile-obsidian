@@ -305,8 +305,10 @@ struct LauncherView: View {
                 )
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
+                .frame(maxWidth: .infinity)
                 .frame(minHeight: 104, maxHeight: 160)
             }
+            .frame(maxWidth: .infinity)
             .background(
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(EditorialPalette.surface)
@@ -482,7 +484,23 @@ private struct InsetlessTextEditor: NSViewRepresentable {
         textView.drawsBackground = false
         textView.backgroundColor = .clear
         textView.textContainerInset = .zero
-        textView.textContainer?.lineFragmentPadding = 0
+        textView.minSize = NSSize(width: 0, height: 0)
+        textView.maxSize = NSSize(
+            width: CGFloat.greatestFiniteMagnitude,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+        textView.isHorizontallyResizable = false
+        textView.isVerticallyResizable = true
+        textView.autoresizingMask = [.width]
+        if let container = textView.textContainer {
+            container.lineFragmentPadding = 0
+            container.widthTracksTextView = true
+            container.heightTracksTextView = false
+            container.containerSize = NSSize(
+                width: 0,
+                height: CGFloat.greatestFiniteMagnitude
+            )
+        }
         textView.font = font
         textView.textColor = textColor
         textView.insertionPointColor = textColor
@@ -698,13 +716,6 @@ private struct QueryResponseView: View {
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .strokeBorder(EditorialPalette.border, lineWidth: 1)
         )
-        .environment(\.openURL, OpenURLAction { url in
-            if let target = WikilinkParser.decodeLinkURL(url) {
-                onOpenWiki(target)
-                return .handled
-            }
-            return .systemAction
-        })
     }
 
     private var header: some View {
