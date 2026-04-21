@@ -148,7 +148,19 @@ struct QueryDetailView: View {
     @ViewBuilder
     private var activeTurnView: some View {
         VStack(alignment: .leading, spacing: 10) {
-            questionHeader(model.querySession.question)
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                questionHeader(model.querySession.question)
+                Spacer(minLength: 8)
+                if model.querySession.status == .running {
+                    Button(action: { model.cancelQuery() }) {
+                        Image(systemName: "stop.fill")
+                            .font(.system(size: 11))
+                            .foregroundStyle(EditorialPalette.textTertiary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Stop query")
+                }
+            }
 
             if model.querySession.status == .running && model.querySession.assistantText.isEmpty {
                 HStack(spacing: 8) {

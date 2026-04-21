@@ -119,6 +119,7 @@ struct LauncherView: View {
     @State private var draftText: String = ""
     @State private var stagedFiles: [URL] = []
     @State private var isDropTargeted = false
+    @State private var hiddenHandoffQuestion: String?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -394,9 +395,9 @@ struct LauncherView: View {
     private func launch() {
         let trimmed = draftText.trimmingCharacters(in: .whitespacesAndNewlines)
         if willRouteInApp {
+            hiddenHandoffQuestion = nil
             model.sendQuery(trimmed)
             draftText = ""
-            showQueryWindow()
             return
         }
         let errorBefore = model.lastError
@@ -411,12 +412,18 @@ struct LauncherView: View {
 
     @ViewBuilder
     private var queryResponseSection: some View {
-        if model.querySession.status != .idle {
-            QueryResponseView(
+        if model.querySession.status != .idle,
+           hiddenHandoffQuestion != model.querySession.question {
+            QueryHandoffView(
                 session: model.querySession,
-                onCancel: { model.cancelQuery() },
-                onDismiss: { model.dismissQueryResponse() },
-                onOpenWiki: { target in model.openWikiPage(target: target) }
+                onOpen: { showQueryWindow() },
+                onDismiss: {
+                    if model.querySession.status == .running {
+                        hiddenHandoffQuestion = model.querySession.question
+                    } else {
+                        model.dismissQueryResponse()
+                    }
+                }
             )
             .padding(.horizontal, 24)
             .padding(.bottom, 14)
@@ -454,8 +461,18 @@ struct LauncherView: View {
     }
 
     private func showQueryWindow() {
+        dismissMenuBarPopup()
         openWindow(id: "query-window")
         NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+
+    private func dismissMenuBarPopup() {
+        for window in NSApplication.shared.windows {
+            let name = String(describing: type(of: window))
+            if name.contains("MenuBarExtra") || name.contains("NSStatusBarWindow") {
+                window.orderOut(nil)
+            }
+        }
     }
 }
 
@@ -693,21 +710,39 @@ struct ObsidianMark: View {
     }
 }
 
-// MARK: - Query response
+// MARK: - Query handoff
 
-private struct QueryResponseView: View {
+private struct QueryHandoffView: View {
     @Bindable var session: QuerySession
-    let onCancel: () -> Void
+    let onOpen: () -> Void
     let onDismiss: () -> Void
-    let onOpenWiki: (String) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            header
-            responseBody(for: session)
-            footer
+        HStack(spacing: 10) {
+            Text(session.question)
+                .font(.system(size: 12, design: activeFont.design))
+                .foregroundStyle(EditorialPalette.textSecondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+
+            Spacer(minLength: 8)
+
+            Button(action: onOpen) {
+                Text("Open")
+                    .font(.system(size: 12, weight: .semibold))
+            }
+            .buttonStyle(PrimaryButtonStyle())
+
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(EditorialPalette.textTertiary)
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss")
         }
-        .padding(14)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
         .background(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(EditorialPalette.surface)
@@ -717,134 +752,6 @@ private struct QueryResponseView: View {
                 .strokeBorder(EditorialPalette.border, lineWidth: 1)
         )
     }
-
-    private var header: some View {
-        HStack(alignment: .top, spacing: 10) {
-            statusGlyph
-                .frame(width: 12, height: 12, alignment: .center)
-                .padding(.top, 2)
-            Text(session.question)
-                .font(.system(size: 13, weight: .semibold, design: activeFont.design))
-                .foregroundStyle(EditorialPalette.textPrimary)
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
-            Spacer(minLength: 8)
-            if session.status == .running {
-                Button(action: onCancel) {
-                    Image(systemName: "stop.fill")
-                        .font(.system(size: 11))
-                        .foregroundStyle(EditorialPalette.textTertiary)
-                }
-                .buttonStyle(.plain)
-                .help("Cancel query")
-            } else {
-                Button(action: onDismiss) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundStyle(EditorialPalette.textTertiary)
-                }
-                .buttonStyle(.plain)
-                .help("Dismiss")
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func responseBody(for session: QuerySession) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if session.status == .running && session.assistantText.isEmpty {
-                HStack(spacing: 8) {
-                    EditorialSpinner(size: 14)
-                    Text(session.statusDetail.isEmpty ? "Starting…" : session.statusDetail)
-                        .font(.system(size: 13, design: activeFont.design).italic())
-                        .foregroundStyle(EditorialPalette.textTertiary)
-                        .animation(.easeInOut(duration: 0.2), value: session.statusDetail)
-                }
-                .padding(.vertical, 10)
-            } else if let error = session.errorMessage, session.status == .failed {
-                Text(error)
-                    .font(.system(size: 12))
-                    .foregroundStyle(EditorialPalette.warning)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            } else if session.status == .cancelled {
-                Text("Query cancelled.")
-                    .font(.system(size: 13, design: activeFont.design).italic())
-                    .foregroundStyle(EditorialPalette.textTertiary)
-            } else if !session.assistantText.isEmpty {
-                ScrollView {
-                    MarkdownContentView(text: session.assistantText) { target in
-                        onOpenWiki(target)
-                    }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(idealHeight: 120, maxHeight: 280)
-                .fixedSize(horizontal: false, vertical: true)
-            } else {
-                Text("Waiting for response...")
-                    .font(.system(size: 13, design: activeFont.design).italic())
-                    .foregroundStyle(EditorialPalette.textTertiary)
-            }
-        }
-        .padding(.vertical, 4)
-    }
-
-    private var footer: some View {
-        HStack(spacing: 10) {
-            if session.status == .running {
-                if !session.toolCalls.isEmpty {
-                    Text("using \(session.toolCalls.suffix(2).joined(separator: ", "))")
-                        .font(.system(size: 10))
-                        .foregroundStyle(EditorialPalette.textTertiary)
-                }
-            }
-            if session.status == .completed {
-                if let ms = session.durationMs {
-                    Text("\(Double(ms) / 1000, specifier: "%.1f")s")
-                        .font(.system(size: 10))
-                        .foregroundStyle(EditorialPalette.textTertiary)
-                }
-                if !session.toolCalls.isEmpty {
-                    Text("tools: \(session.toolCalls.prefix(3).joined(separator: ", "))")
-                        .font(.system(size: 10))
-                        .foregroundStyle(EditorialPalette.textTertiary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-            }
-            Spacer(minLength: 0)
-            if !session.permissionDenials.isEmpty {
-                Text("\(session.permissionDenials.count) tool denials")
-                    .font(.system(size: 10))
-                    .foregroundStyle(EditorialPalette.warning)
-            }
-        }
-        .frame(maxWidth: .infinity)
-    }
-
-    @ViewBuilder
-    private var statusGlyph: some View {
-        switch session.status {
-        case .running:
-            EditorialSpinner(size: 12)
-        case .completed:
-            Circle()
-                .fill(EditorialPalette.accent)
-                .frame(width: 6, height: 6)
-        case .failed:
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(EditorialPalette.warning)
-                .font(.system(size: 11))
-        case .cancelled:
-            Image(systemName: "stop.circle.fill")
-                .foregroundStyle(EditorialPalette.textTertiary)
-                .font(.system(size: 11))
-        case .idle:
-            EmptyView()
-        }
-    }
-
 }
 
 // MARK: - Button styles

@@ -60,10 +60,13 @@ public final class ClaudeQueryRunner: ClaudeQueryRunning, @unchecked Sendable {
         - Use Mermaid diagrams for compact process flows, causal chains, or relationship maps.
         - Use Obsidian callouts for notable caveats, open questions, or recommendations.
 
-        Cite supporting pages inline with Obsidian [[Page Title]] wikilinks, for example: \
-        The policy shift was driven by X ([[Policy Timeline]]). If the files you inspect \
-        do not contain enough evidence, say that directly and briefly mention what you \
-        searched. Do not claim to save files or update the wiki from this query response. \
+        Every factual claim must be grounded in the wiki and cited inline with an Obsidian \
+        [[Page Title]] wikilink to the page you read it from, for example: The policy shift \
+        was driven by X ([[Policy Timeline]]). This is a hard requirement: a response with \
+        no wikilinks is a failure. Do not answer from prior knowledge or training data. If \
+        the wiki does not contain evidence for part of the question, say so explicitly for \
+        that part and briefly list what you searched — do not fill the gap with unsourced \
+        claims. Do not claim to save files or update the wiki from this query response. \
         Do not edit, write, ingest, refresh, render, save files, or otherwise mutate the workspace.
         """
 
