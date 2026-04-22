@@ -1,8 +1,28 @@
 # Compile
 
-Compile is an LLM-maintained wiki for Obsidian. You curate raw sources and ask questions; Claude does the reading, synthesis, linking, and maintenance.
+**Compile** is an LLM-maintained personal wiki for Obsidian. You feed it raw sources — PDFs, Notion pages, URLs, stray notes — and Claude does the reading, summarizing, cross-linking, and maintenance. Over time the wiki compounds: every ingested source and every saved answer makes it richer and better connected.
 
-The front door is **MyWiki.app**, a macOS menu-bar companion that bundles a Python CLI, opens the vault in Obsidian, and streams Claude answers in-app.
+## MyWiki.app — the front door
+
+The primary way to use Compile is **MyWiki.app**, a native macOS menu-bar companion. It gives you:
+
+- **A query window.** Ask a question in plain English; Claude searches your wiki first, cites your own notes with `[[wikilinks]]`, and fills gaps from general knowledge when needed. Answers stream back as markdown tables, mermaid diagrams, and Obsidian callouts — not just paragraphs.
+- **Follow-ups with session memory.** Each query thread is a resumable Claude session.
+- **One-click shortcuts** to open the vault in Obsidian, jump to the Obsidian graph view, reveal the workspace in Finder, or drop into a Terminal at the workspace root.
+- **A bundled CLI sidecar** (`compile-bin`, built with PyInstaller) that handles ingest, synthesis, rendering, and health checks — no separate Python install needed.
+- **Auto-installed slash commands** (`/capture`, `/query`, `/context`, `/ingest`, `/lint`, `/synthesize`, `/notion-sync`, …) that Claude Code can invoke from any terminal session against your wiki.
+
+Under the hood, MyWiki runs `claude -p` in a read-only sandbox (Grep/Read/Glob only, no Task/Bash/Edit) against your workspace, so in-app queries can't accidentally mutate your wiki.
+
+## The Python CLI
+
+`compile` is the tool Claude drives to do the actual work. You can also use it standalone from any terminal:
+
+- `compile init` — scaffold a workspace
+- `compile ingest <file>` — register a raw source and create a source note
+- `compile obsidian search | page | neighbors` — programmatic wiki reads
+- `compile render canvas | marp | chart` — explicit rich-output renderers
+- `compile health`, `compile obsidian refresh` — lint and reindex
 
 ---
 
@@ -44,11 +64,13 @@ On first launch, MyWiki creates a default workspace at `~/wiki` called "Commonpl
 
 Three layers, one contract:
 
-- **`raw/`** — your source documents. Immutable. Claude reads but never edits.
-- **`wiki/`** — the LLM-maintained layer: source notes, articles, maps, outputs.
-- **`WIKI.md`** — the schema telling Claude how this wiki is structured.
+- **`raw/`** — your source documents. Immutable. Claude reads but never edits. PDFs, Notion exports, fetched URLs, pasted notes — all live here.
+- **`wiki/`** — the LLM-maintained layer: source notes, articles, maps, outputs. Every page here is grounded in something from `raw/`.
+- **`WIKI.md`** — the schema telling Claude how this wiki is structured, what status levels mean, and how to link pages together.
 
-Pages are one of four types: `source` (provenance-anchored), `article` (synthesis), `map` (navigation), `output` (saved answer, deck, chart, or canvas).
+Pages are one of four types: `source` (provenance-anchored, one per raw file), `article` (cross-source synthesis), `map` (navigation hubs), `output` (saved answer, deck, chart, or canvas).
+
+When you ingest a source, the source note embeds the full extracted text in a collapsed `> [!abstract]- Full extracted text` callout, so future queries can grep the real content — not just a synopsis.
 
 ### Slash commands
 
