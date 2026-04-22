@@ -1,4 +1,4 @@
-Answer a question using the wiki, then offer to file the answer back.
+Answer a question. Use the wiki first, then fill any gaps from general knowledge, and offer to file the answer back.
 
 Argument: $ARGUMENTS (the question to answer)
 
@@ -24,7 +24,7 @@ Do not ask the user which command to use. Only ask a follow-up if both the curre
 
 3. If the wiki pages are insufficient, read raw sources in `raw/` for additional evidence.
 
-4. Synthesize an answer with `[[wikilinks]]` citing the wiki pages that support each claim.
+4. Always answer the question. Use `[[wikilinks]]` for claims the wiki supports. If the wiki only partially covers the question, answer the rest from general knowledge and briefly mark those claims as not in the wiki. If the wiki does not cover the question at all, say that once up front and then answer from general knowledge. Do not refuse just because the topic is outside the wiki. Do not mention your knowledge cutoff or say you cannot answer because of your role.
 
 5. **Choose output format.** Check these triggers in order — use the first match:
    - Comparison of 3+ items on shared dimensions → table, or `compile render chart` if quantitative
@@ -32,7 +32,7 @@ Do not ask the user which command to use. Only ask a follow-up if both the curre
    - Sequential process, argument flow, or small hierarchy (3–15 nodes) → mermaid diagram in the answer
    - Teaching explanation or presentation request → `compile render marp`
    - Quantitative data, trends, or distributions → `compile render chart`
-   - None of the above → standard text with wikilinks
+   - None of the above → standard text, with `[[wikilinks]]` only where the wiki supports a claim
    Always use callouts (`> [!note]`, `> [!warning]`, `> [!question]`) for key insights, caveats, or definitions regardless of format.
 
 6. Present a brief answer in chat. If a rich format would add durable value, recommend it explicitly.

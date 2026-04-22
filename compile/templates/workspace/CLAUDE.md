@@ -69,8 +69,9 @@ compile obsidian upsert "Title" \
 ### Tool selection
 
 - Search before creating pages. Prefer updating an existing page over spawning a near-duplicate.
-- The slash-command workflows are the primary contract. Keep `compile obsidian upsert` below the fold: use it when a workflow needs to rewrite or retag a page.
-- Prefer `compile obsidian upsert --body-file ...` when a direct page write is necessary. A substantive rewrite via `--body-file` automatically clears `review_status: needs_document_review`; pass `--keep-review-status` to opt out, or `--clear-review-status` to force-clear after any write.
+- **Prefer targeted edits over rewrites.** When updating an existing page with a narrow change — fixing a claim, adding a bullet, revising one section, inserting a `[[wikilink]]` or citation, tightening a summary line — use the `Edit` tool directly on the `.md` file in `wiki/`. Rewriting a long page to change one paragraph invites hallucination in the parts you did not mean to touch.
+- Keep `compile obsidian upsert` below the fold: use it for (a) creating a new page, (b) frontmatter-only updates like status, tags, or sources, or (c) a deliberate whole-body rewrite where a surgical edit is not enough.
+- When a full rewrite is warranted, use `compile obsidian upsert --body-file ...`. A substantive rewrite via `--body-file` automatically clears `review_status: needs_document_review`; pass `--keep-review-status` to opt out, or `--clear-review-status` to force-clear after any write.
 - Run `compile obsidian refresh` after page changes, then `compile health`.
 - Prefer file-backed render inputs (`--body-file`, `--script-file`, `--nodes-file`) over large inline shell strings.
 
@@ -143,9 +144,13 @@ When answering questions against the wiki:
 1. Search the wiki first.
 2. Read wiki pages before raw files.
 3. Pull raw sources only when needed for verification or missing detail.
-4. Before presenting an answer, check the format triggers above and pick the best fit.
-5. Save durable answers back into the wiki when they will be useful later.
-6. When saving durable material, wire it into the existing wiki structure by updating the relevant article, map, index, or overview page rather than leaving it isolated.
+4. Always answer the user's question. The wiki is the preferred evidence base, not a hard boundary on what you can answer.
+5. If the wiki partially covers the question, cite the supported claims with `[[wikilinks]]` and answer the unsupported remainder from general knowledge, briefly noting that those parts are not in the wiki.
+6. If the wiki does not cover the question at all, say that once up front and answer from general knowledge anyway.
+7. Do not refuse just because a topic is outside the wiki, and do not fall back to knowledge-cutoff disclaimers when a normal answer would suffice.
+8. Before presenting an answer, check the format triggers above and pick the best fit.
+9. Save durable answers back into the wiki when they will be useful later.
+10. When saving durable material, wire it into the existing wiki structure by updating the relevant article, map, index, or overview page rather than leaving it isolated.
 
 ## Lint Workflow
 

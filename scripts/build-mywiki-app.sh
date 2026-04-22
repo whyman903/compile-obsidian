@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+UPDATE_WORKSPACE=0
+for arg in "$@"; do
+  case "$arg" in
+    --update) UPDATE_WORKSPACE=1 ;;
+    *) echo "Unknown argument: $arg" >&2; exit 2 ;;
+  esac
+done
+
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_ROOT="$ROOT/MyWiki"
 BUILD_ROOT="$ROOT/.build/mywiki"
@@ -38,14 +46,17 @@ codesign --force --sign - --deep "$APP_BUNDLE"
 
 echo "Built app bundle at: $APP_BUNDLE"
 
-if [[ -n "${MYWIKI_DEV_WORKSPACE:-}" ]]; then
-  DEV_WORKSPACE="${MYWIKI_DEV_WORKSPACE/#\~/$HOME}"
+if [[ "$UPDATE_WORKSPACE" -eq 1 ]]; then
+  DEV_WORKSPACE="${MYWIKI_DEV_WORKSPACE:-$HOME/wiki}"
+  DEV_WORKSPACE="${DEV_WORKSPACE/#\~/$HOME}"
   if [[ -d "$DEV_WORKSPACE" ]]; then
     echo "Syncing Claude templates into $DEV_WORKSPACE..."
     uv run compile claude setup "$DEV_WORKSPACE" --force
   else
-    echo "MYWIKI_DEV_WORKSPACE=$DEV_WORKSPACE is not a directory; skipping template sync."
+    echo "Wiki workspace $DEV_WORKSPACE is not a directory; skipping template sync."
   fi
+else
+  echo "Skipping Claude template sync (pass --update to refresh workspace)."
 fi
 
 if [[ -n "${MYWIKI_SKIP_LAUNCH:-}" || -n "${CI:-}" ]]; then

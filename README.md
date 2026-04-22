@@ -57,7 +57,7 @@ Use these from MyWiki.app or from a Claude Code session launched by the app:
 | Command | What it does |
 |---|---|
 | `/capture` | Drop a thought or snippet into `~/wiki/raw/` and ingest it. Always targets the configured wiki. |
-| `/query` | Search and synthesize an answer with citations. Uses the current workspace, or falls back to the configured wiki. |
+| `/query` | Search the wiki first, then answer any remaining gaps from general knowledge with citations where available. Uses the current workspace, or falls back to the configured wiki. |
 | `/context` | Load wiki status, index, overview, and schema into the session. |
 | `/ingest [source]` | Register a raw file or URL as a source note. Run from inside the workspace. |
 | `/lint` | Audit: broken links, status honesty, dead-end notes, coverage gaps. |

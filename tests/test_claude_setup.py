@@ -50,6 +50,9 @@ def test_fresh_install(tmp_path: Path) -> None:
     assert "--script-file" in query
     assert "Want me to save this as a wiki output page?" in query
     assert "Only save it if the user says yes" in query
+    assert "fill any gaps from general knowledge" in query
+    assert "Do not refuse just because the topic is outside the wiki" in query
+    assert "Do not mention your knowledge cutoff" in query
 
     context = (home / ".claude" / "commands" / "context.md").read_text()
     assert "First try the current working directory" in context
@@ -70,6 +73,9 @@ def test_fresh_install(tmp_path: Path) -> None:
     assert "## Enrich Workflow" not in workspace_claude
     assert "<!-- compile:figures:start -->" not in workspace_claude
     assert "create them when the user asks for them or explicitly agrees" in workspace_claude.lower()
+    assert "not a hard boundary on what you can answer" in workspace_claude
+    assert "answer from general knowledge anyway" in workspace_claude
+    assert "knowledge-cutoff disclaimers" in workspace_claude
     assert (ws / ".claude" / "settings.local.json").exists()
     settings_content = (ws / ".claude" / "settings.local.json").read_text()
     assert '"mcp__notion"' in settings_content
@@ -372,6 +378,28 @@ def test_install_covers_all_current_template_files(tmp_path: Path) -> None:
 
     assert installed_globals == _template_names("global")
     assert installed_workspace_commands == _template_names("workspace", "commands")
+
+
+def test_templates_prefer_targeted_edits_over_rewrites(tmp_path: Path) -> None:
+    ws = _make_workspace(tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+    install_claude_files(ws, home, force=False)
+
+    claude_md = (ws / "CLAUDE.md").read_text()
+    assert "Prefer targeted edits over rewrites" in claude_md
+    assert "`Edit` tool" in claude_md
+
+    ingest = (ws / ".claude" / "commands" / "ingest.md").read_text()
+    assert "Use the `Edit` tool" in ingest
+    assert "Do not rewrite the whole anchor body" in ingest
+
+    synthesize = (ws / ".claude" / "commands" / "synthesize.md").read_text()
+    assert "use the `Edit` tool" in synthesize
+    assert "Do not regenerate the whole article body" in synthesize
+
+    lint = (ws / ".claude" / "commands" / "lint.md").read_text()
+    assert "Default to the `Edit` tool" in lint
 
 
 def test_invalid_workspace_errors(tmp_path: Path) -> None:
