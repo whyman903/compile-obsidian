@@ -274,16 +274,25 @@ public final class CompileRunner: CompileRunning, @unchecked Sendable {
     }
 
     private func readAllData(from pipe: Pipe, label: String) -> Task<Data, Never> {
+        // Drain the pipe with blocking `readToEnd()` on a GCD worker, bridged
+        // into Swift concurrency via a checked continuation. The async
+        // `FileHandle.bytes` iterator stops pumping mid-stream and deadlocks
+        // once the child fills the 64KB pipe buffer, which hung every wiki-link
+        // click that shells out to `compile obsidian page`. Running the blocking
+        // read on `DispatchQueue.global` keeps the cooperative thread pool free
+        // — a `Task.detached { readToEnd() }` would pin a pool thread per pipe.
         Task { [logger] in
-            var data = Data()
-            do {
-                for try await byte in pipe.fileHandleForReading.bytes {
-                    data.append(byte)
+            await withCheckedContinuation { (continuation: CheckedContinuation<Data, Never>) in
+                DispatchQueue.global(qos: .utility).async {
+                    do {
+                        let data = try pipe.fileHandleForReading.readToEnd() ?? Data()
+                        continuation.resume(returning: data)
+                    } catch {
+                        logger.log("Failed while reading sidecar \(label): \(error)")
+                        continuation.resume(returning: Data())
+                    }
                 }
-            } catch {
-                logger.log("Failed while reading sidecar \(label): \(error)")
             }
-            return data
         }
     }
 

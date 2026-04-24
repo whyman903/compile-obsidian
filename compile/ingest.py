@@ -31,12 +31,10 @@ def build_ingest_artifact(
     effective_title = title or extracted.title
     synopsis = _build_synopsis(extracted)
     full_text = ""
-    if (
-        raw_relative.lower().endswith(".pdf")
-        and not extracted.metadata_only
-        and extracted.page_texts
-    ):
-        full_text = extracted.normalized_text
+    if not extracted.metadata_only:
+        candidate = extracted.full_text or extracted.normalized_text
+        if candidate.strip():
+            full_text = candidate
     return IngestArtifact(
         title=effective_title,
         page_summary=_frontmatter_summary(synopsis),

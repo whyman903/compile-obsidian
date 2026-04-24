@@ -254,10 +254,69 @@ final class ClaudeQueryRunnerTests: XCTestCase {
             if case .failed(let message) = event { return message } else { return nil }
         }.first
         let message = try XCTUnwrap(failedMessage)
-        XCTAssertTrue(message.contains("Claude exited before producing an answer"))
-        XCTAssertTrue(message.contains("not valid JSON"))
-        XCTAssertTrue(message.contains("partial tool result"))
-        XCTAssertFalse(message.contains("Query completed without a response"))
+        XCTAssertTrue(message.contains("Claude exited before producing an answer"),
+                      "message must trigger AppModel.isRetryableIncompleteAnswerFailure auto-retry, got: \(message)")
+        XCTAssertTrue(message.contains("mid-tool-result"),
+                      "expected clean truncated-tool-result explanation, got: \(message)")
+        XCTAssertTrue(message.contains("please retry"),
+                      "expected retry hint, got: \(message)")
+        XCTAssertFalse(message.contains("partial tool result"),
+                       "should not dump raw truncated JSON, got: \(message)")
+    }
+
+    func testZeroExitWithTruncatedUserLineRecoversFinalAnswerFromTranscript() async throws {
+        let stdout = """
+        {"type":"system","subtype":"init","session_id":"transcript-session"}
+        {"type":"assistant","message":{"content":[{"type":"text","text":"Searching the wiki before answering."}]}}
+        {"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/tmp/x.md"}}]}}
+        {"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"long tool output cut off
+        """
+        let scriptURL = try makeFakeClaude(stdout: stdout)
+        let transcriptRoot = tempDirectory.appending(path: "claude-home", directoryHint: .isDirectory)
+        let projectName = tempDirectory.standardizedFileURL.path
+            .replacingOccurrences(of: "/", with: "-")
+        let transcriptURL = transcriptRoot
+            .appending(path: "projects", directoryHint: .isDirectory)
+            .appending(path: projectName, directoryHint: .isDirectory)
+            .appending(path: "transcript-session.jsonl", directoryHint: .notDirectory)
+        try FileManager.default.createDirectory(
+            at: transcriptURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        let transcript = """
+        {"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"source evidence"}]}}
+        {"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Recovered final answer from transcript."}]}}
+        """
+        try transcript.write(to: transcriptURL, atomically: true, encoding: .utf8)
+
+        let logger = AppLogger(logDirectory: tempDirectory.appending(path: "logs-truncated-fallback", directoryHint: .isDirectory))
+        let runner = ClaudeQueryRunner(
+            logger: logger,
+            executableProvider: { scriptURL },
+            transcriptRootProvider: { transcriptRoot }
+        )
+
+        let collector = EventCollector()
+        try await runner.runQuery(
+            prompt: "/query x",
+            workspaceURL: tempDirectory,
+            resumeSessionID: nil,
+            onEvent: { collector.append($0) }
+        )
+
+        let events = collector.snapshot()
+        let finishedText = events.compactMap { event -> String? in
+            if case .finished(let text, _, _, _, _) = event { return text } else { return nil }
+        }.first
+        XCTAssertEqual(finishedText, "Recovered final answer from transcript.")
+        let finishedSessionID = events.compactMap { event -> String? in
+            if case .finished(_, _, _, _, let sessionID) = event { return sessionID } else { return nil }
+        }.first
+        XCTAssertEqual(finishedSessionID, "transcript-session")
+        XCTAssertFalse(events.contains { event in
+            if case .failed = event { return true }
+            return false
+        }, "should recover from transcript instead of failing: \(events)")
     }
 
     func testZeroExitWithOnlyToolResultEmitsFailedEvent() async throws {
@@ -336,7 +395,7 @@ final class ClaudeQueryRunnerTests: XCTestCase {
         }
     }
 
-    func testRunQueryUsesReadOnlyAgentToolArgumentsAndResumeID() async throws {
+    func testRunQueryUsesAgenticResearchToolArgumentsAndResumeID() async throws {
         let scriptURL = tempDirectory.appending(path: "claude", directoryHint: .notDirectory)
         let script = """
         #!/bin/zsh
@@ -369,48 +428,66 @@ final class ClaudeQueryRunnerTests: XCTestCase {
 
         XCTAssertTrue(args.contains("-p"), "missing print mode: \(args)")
         XCTAssertEqual(Array(args.drop(while: { $0 != "--resume" }).prefix(2)), ["--resume", "session-123"])
-        XCTAssertEqual(Array(args.drop(while: { $0 != "--settings" }).prefix(2)), ["--settings", #"{"disableAllHooks":true}"#])
+        XCTAssertFalse(args.contains("--settings"), "query mode should allow workspace hooks to run: \(args)")
         XCTAssertFalse(args.contains("--permission-mode"), "plan mode stops claude -p after the first plan statement")
-        XCTAssertEqual(Array(args.drop(while: { $0 != "--allowedTools" }).prefix(2)), ["--allowedTools", "Read,Grep,Glob,LS"])
+        XCTAssertEqual(
+            Array(args.drop(while: { $0 != "--allowedTools" }).prefix(2)),
+            ["--allowedTools", "Read,Grep,Glob,LS,Bash,Task,WebSearch,WebFetch"]
+        )
         XCTAssertTrue(args.contains("--exclude-dynamic-system-prompt-sections"))
         XCTAssertEqual(
             Array(args.drop(while: { $0 != "--disallowedTools" }).prefix(2)),
-            ["--disallowedTools", "Task,AskUserQuestion,Monitor,Bash,Edit,Write,NotebookEdit,MultiEdit,WebSearch,WebFetch"]
+            ["--disallowedTools", "AskUserQuestion,Monitor,Edit,Write,NotebookEdit,MultiEdit"]
         )
-        XCTAssertTrue(args.contains { $0.contains("Task") })
+        let disallowed = args.drop(while: { $0 != "--disallowedTools" }).dropFirst().first ?? ""
+        XCTAssertFalse(disallowed.contains("Task"))
+        XCTAssertFalse(disallowed.contains("Bash"))
+        XCTAssertFalse(disallowed.contains("WebSearch"))
+        XCTAssertFalse(disallowed.contains("WebFetch"))
         XCTAssertFalse(args.contains("--add-dir"))
         XCTAssertFalse(args.contains("--bare"))
         XCTAssertFalse(args.contains("--effort"))
         XCTAssertFalse(args.contains("--session-id"))
         XCTAssertFalse(args.contains("dontAsk"))
         XCTAssertFalse(args.contains("bypassPermissions"))
-        XCTAssertFalse(args.contains { $0.contains("Bash(") })
     }
 
-    func testSystemPromptDirectsReadOnlyAgentSearch() {
+    func testSystemPromptDirectsAgenticResearch() {
         let prompt = ClaudeQueryRunner.wikiSystemPromptAddendum
 
-        XCTAssertTrue(prompt.contains("read-only"), "should identify the query mode as read-only")
-        XCTAssertTrue(prompt.contains("do not use subagents"), "should prevent nested task runners")
-        XCTAssertTrue(prompt.contains("Task"), "should explicitly forbid Task")
+        XCTAssertTrue(prompt.contains("research-only"), "should identify query mode as research-only")
+        XCTAssertTrue(prompt.contains("Full Bash is trusted"), "should document full Bash trust")
+        XCTAssertTrue(prompt.contains("Task subagents"), "should permit subagents for deep research")
+        XCTAssertFalse(prompt.contains("do not use subagents"), "should not prevent nested research")
         XCTAssertTrue(prompt.contains("Grep"), "should direct Claude to search with Grep")
         XCTAssertTrue(prompt.contains("Read"), "should direct Claude to read evidence")
-        XCTAssertTrue(prompt.contains("[!abstract]- Full extracted text"), "should mention PDF text callouts")
+        XCTAssertTrue(prompt.contains("compile obsidian search"), "should direct Claude to semantic wiki search")
+        XCTAssertTrue(prompt.contains("compile obsidian page"), "should direct Claude to page reads")
+        XCTAssertTrue(prompt.contains("compile obsidian neighbors"), "should direct Claude to graph context")
+        XCTAssertTrue(prompt.contains("rg"), "should mention shell text search")
+        XCTAssertTrue(prompt.contains("find"), "should mention file enumeration")
+        XCTAssertTrue(prompt.contains("stat"), "should mention metadata inspection")
+        XCTAssertTrue(prompt.contains("bounded page excerpts"), "should discourage oversized shell output")
+        XCTAssertTrue(prompt.contains("[!abstract]- Full extracted text"), "should mention full-text callouts")
+        XCTAssertTrue(prompt.contains("raw/"), "should direct fallback to raw/ when source notes are thin")
         XCTAssertTrue(prompt.contains(#"\[\[Page Title\]\]"#), "should show escaped backlink grep")
         XCTAssertTrue(prompt.contains("[[Policy Timeline]]"), "should include a citation example")
         XCTAssertTrue(prompt.contains("wikilinks"), "should mention wikilink citations")
+        XCTAssertTrue(prompt.contains("difference between X and Y"), "should include comparison playbook")
+        XCTAssertTrue(prompt.contains("how many notes"), "should include count/find-all playbook")
+        XCTAssertTrue(prompt.contains("paper from last week about GRPO"), "should include fuzzy recent-upload playbook")
         XCTAssertTrue(prompt.contains("Always answer the user's question"), "should always attempt to answer the question")
         XCTAssertTrue(prompt.contains("prefer wiki-grounded"), "should prefer wiki-grounded answers when possible")
         XCTAssertTrue(prompt.contains("Do not refuse to answer"), "should not refuse when the wiki lacks coverage")
         XCTAssertTrue(prompt.contains("not in your wiki"), "should tell Claude how to flag non-wiki claims")
-        XCTAssertTrue(prompt.contains("preferred evidence base"), "should describe the wiki as preferred, not mandatory")
-        XCTAssertTrue(prompt.contains("stop digging and answer directly"), "should stop tool loops when the wiki has nothing useful")
+        XCTAssertTrue(prompt.contains("what you searched"), "should require search disclosure for absence claims")
+        XCTAssertTrue(prompt.contains("WebSearch/WebFetch"), "should allow external web research")
+        XCTAssertFalse(prompt.contains("<wiki-context>"), "query mode should not rely on pre-fetched context")
         XCTAssertTrue(prompt.contains("knowledge cutoff"), "should explicitly discourage knowledge-cutoff refusals")
         XCTAssertTrue(prompt.contains("markdown tables"), "should preserve rich Markdown guidance")
         XCTAssertTrue(prompt.contains("Mermaid"), "should preserve diagram guidance")
         XCTAssertTrue(prompt.contains("callouts"), "should preserve Obsidian callout guidance")
         XCTAssertTrue(prompt.contains("Do not claim to save files"), "should forbid false save/update claims")
-        XCTAssertFalse(prompt.contains("wiki-context"), "query mode should not rely on pre-fetched context")
-        XCTAssertTrue(prompt.contains("Do not edit"), "should forbid mutations")
+        XCTAssertTrue(prompt.contains("Do not use Edit"), "should forbid direct mutation tools")
     }
 }

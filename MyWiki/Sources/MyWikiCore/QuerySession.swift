@@ -115,6 +115,8 @@ public final class QuerySession: Identifiable {
             case "Read": self.statusDetail = "Reading a page…"
             case "Glob": self.statusDetail = "Listing pages…"
             case "LS": self.statusDetail = "Walking directories…"
+            case "Bash": self.statusDetail = "Searching with Bash…"
+            case "Task": self.statusDetail = "Running a research subtask…"
             case "WebSearch", "WebFetch": self.statusDetail = "Checking the web…"
             default: self.statusDetail = "Using \(name)…"
             }

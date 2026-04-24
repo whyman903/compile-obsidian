@@ -12,7 +12,7 @@ The primary way to use Compile is **MyWiki.app**, a native macOS menu-bar compan
 - **A bundled CLI sidecar** (`compile-bin`, built with PyInstaller) that handles ingest, synthesis, rendering, and health checks — no separate Python install needed.
 - **Auto-installed slash commands** (`/capture`, `/query`, `/context`, `/ingest`, `/lint`, `/synthesize`, `/notion-sync`, …) that Claude Code can invoke from any terminal session against your wiki.
 
-Under the hood, MyWiki runs `claude -p` in a read-only sandbox (Grep/Read/Glob only, no Task/Bash/Edit) against your workspace, so in-app queries can't accidentally mutate your wiki.
+Under the hood, MyWiki runs `claude -p` as an agentic research session against your workspace. In-app queries allow Bash, local search/read tools, Task subagents, and web search; direct edit/write tools are blocked, but full Bash is trusted and should be treated as research-only.
 
 ## The Python CLI
 

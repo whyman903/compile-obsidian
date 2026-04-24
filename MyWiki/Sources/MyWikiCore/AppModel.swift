@@ -209,27 +209,25 @@ public final class AppModel {
             await MainActor.run { session.updateStatusDetail("Asking Claude…") }
 
             do {
-                try await claudeRunner.runQuery(
+                try await Self.runQueryWithResearchGuard(
                     prompt: trimmed,
                     workspaceURL: workspaceURL,
                     resumeSessionID: nil,
+                    retryPrompt: {
+                        Self.researchRequiredRetryPrompt(for: trimmed)
+                    },
+                    retryResumeSessionID: nil,
+                    runner: claudeRunner,
+                    logger: log,
+                    logPrefix: "sendQuery",
+                    onRetry: { detail in
+                        await MainActor.run { session.updateStatusDetail(detail) }
+                    },
                     onEvent: { event in
                         await MainActor.run {
-                            switch event {
-                            case .assistantText(let t):
-                                log.log("sendQuery: got assistantText (\(t.count) chars)")
-                            case .finished(let t, let c, _, _, let sessionID):
-                                log.log("sendQuery: got finished — text=\(t.count) chars, cost=\(c ?? -1)")
-                                if let sessionID {
-                                    log.log("sendQuery: Claude session id=\(sessionID)")
-                                }
-                            case .failed(let m):
-                                log.log("sendQuery: got failed — \(m)")
-                                if let feedItemID {
-                                    self?.feedStore.markFailed(id: feedItemID, message: m)
-                                }
-                            default:
-                                break
+                            Self.logQueryEvent(event, logger: log, prefix: "sendQuery")
+                            if case .failed(let m) = event, let feedItemID {
+                                self?.feedStore.markFailed(id: feedItemID, message: m)
                             }
                             session.handle(event)
                         }
@@ -301,12 +299,34 @@ public final class AppModel {
 
             do {
                 do {
-                    try await claudeRunner.runQuery(
+                    try await Self.runQueryWithResearchGuard(
                         prompt: trimmed,
                         workspaceURL: workspaceURL,
                         resumeSessionID: resumeSessionID,
+                        retryPrompt: {
+                            let prompt: String
+                            if priorTurns.isEmpty {
+                                prompt = trimmed
+                            } else {
+                                prompt = Self.followUpPromptWithPriorResearchHint(
+                                    question: trimmed,
+                                    priorTurns: priorTurns
+                                )
+                            }
+                            return Self.researchRequiredRetryPrompt(for: prompt)
+                        },
+                        retryResumeSessionID: nil,
+                        runner: claudeRunner,
+                        logger: log,
+                        logPrefix: "sendFollowUp",
+                        onRetry: { detail in
+                            await MainActor.run { session.updateStatusDetail(detail) }
+                        },
                         onEvent: { event in
-                            await MainActor.run { session.handle(event) }
+                            await MainActor.run {
+                                Self.logQueryEvent(event, logger: log, prefix: "sendFollowUp")
+                                session.handle(event)
+                            }
                         }
                     )
                 } catch let resumeError as ClaudeQueryResumeUnavailableError where resumeSessionID != nil {
@@ -314,15 +334,29 @@ public final class AppModel {
                     await MainActor.run {
                         session.updateStatusDetail("Claude session expired; searching again…")
                     }
-                    try await claudeRunner.runQuery(
-                        prompt: Self.followUpPromptWithPriorResearchHint(
-                            question: trimmed,
-                            priorTurns: priorTurns
-                        ),
+                    let fallbackPrompt = Self.followUpPromptWithPriorResearchHint(
+                        question: trimmed,
+                        priorTurns: priorTurns
+                    )
+                    try await Self.runQueryWithResearchGuard(
+                        prompt: fallbackPrompt,
                         workspaceURL: workspaceURL,
                         resumeSessionID: nil,
+                        retryPrompt: {
+                            Self.researchRequiredRetryPrompt(for: fallbackPrompt)
+                        },
+                        retryResumeSessionID: nil,
+                        runner: claudeRunner,
+                        logger: log,
+                        logPrefix: "sendFollowUp",
+                        onRetry: { detail in
+                            await MainActor.run { session.updateStatusDetail(detail) }
+                        },
                         onEvent: { event in
-                            await MainActor.run { session.handle(event) }
+                            await MainActor.run {
+                                Self.logQueryEvent(event, logger: log, prefix: "sendFollowUp")
+                                session.handle(event)
+                            }
                         }
                     )
                 }
@@ -343,7 +377,7 @@ public final class AppModel {
         }
     }
 
-    private static func followUpPromptWithPriorResearchHint(
+    nonisolated private static func followUpPromptWithPriorResearchHint(
         question: String,
         priorTurns: [QueryTurn]
     ) -> String {
@@ -367,10 +401,28 @@ public final class AppModel {
         }
 
         return """
-        The previous Claude tool context is no longer available. Answer this follow-up from a fresh read-only wiki search.
+        The previous Claude tool context is no longer available. Answer this follow-up from a fresh agentic wiki research pass.
 
         \(question)
         """
+    }
+
+    private static func logQueryEvent(_ event: ClaudeQueryEvent, logger: AppLogger, prefix: String) {
+        switch event {
+        case .assistantText(let text):
+            logger.log("\(prefix): got assistantText (\(text.count) chars)")
+        case .toolCall(let name):
+            logger.log("\(prefix): got toolCall — \(name)")
+        case .toolResult(let preview):
+            logger.log("\(prefix): got toolResult (\(preview.count) chars)")
+        case .finished(let text, let cost, _, _, let sessionID):
+            logger.log("\(prefix): got finished — text=\(text.count) chars, cost=\(cost ?? -1)")
+            if let sessionID {
+                logger.log("\(prefix): Claude session id=\(sessionID)")
+            }
+        case .failed(let message):
+            logger.log("\(prefix): got failed — \(message)")
+        }
     }
 
     public func selectHistorySession(_ record: QueryHistoryRecord) {
@@ -429,6 +481,205 @@ public final class AppModel {
         session.fail("Query completed without a final response")
     }
 
+    nonisolated private static let researchToolNames: Set<String> = [
+        "Bash",
+        "Glob",
+        "Grep",
+        "Read",
+        "Task",
+        "WebFetch",
+        "WebSearch",
+    ]
+
+    private struct ResearchAttemptOutcome: Sendable {
+        let sawResearchTool: Bool
+        let finishedWithoutResearch: Bool
+        let retryableIncompleteAnswerFailureMessage: String?
+    }
+
+    private actor ResearchAttemptBuffer {
+        private var bufferedEvents: [ClaudeQueryEvent] = []
+        private var emittedBufferedEvents = false
+        private var sawFinished = false
+        private var sawResearchTool = false
+        private var retryableIncompleteAnswerFailureMessage: String?
+
+        func handle(
+            _ event: ClaudeQueryEvent,
+            emit: @Sendable (ClaudeQueryEvent) async -> Void
+        ) async {
+            if case .failed(let message) = event,
+               AppModel.isRetryableIncompleteAnswerFailure(message) {
+                retryableIncompleteAnswerFailureMessage = message
+                return
+            }
+
+            if AppModel.isResearchToolCall(event) {
+                sawResearchTool = true
+            }
+
+            if sawResearchTool {
+                if !emittedBufferedEvents {
+                    emittedBufferedEvents = true
+                    let events = bufferedEvents
+                    bufferedEvents.removeAll()
+                    for event in events {
+                        await emit(event)
+                    }
+                }
+                await emit(event)
+            } else {
+                bufferedEvents.append(event)
+            }
+
+            if case .finished = event {
+                sawFinished = true
+            }
+        }
+
+        func finish(
+            emit: @Sendable (ClaudeQueryEvent) async -> Void,
+            discardFinishedWithoutResearch: Bool
+        ) async -> ResearchAttemptOutcome {
+            if !sawResearchTool && (!sawFinished || !discardFinishedWithoutResearch) {
+                await flush(emit: emit)
+            }
+            return ResearchAttemptOutcome(
+                sawResearchTool: sawResearchTool,
+                finishedWithoutResearch: sawFinished && !sawResearchTool,
+                retryableIncompleteAnswerFailureMessage: retryableIncompleteAnswerFailureMessage
+            )
+        }
+
+        func flush(emit: @Sendable (ClaudeQueryEvent) async -> Void) async {
+            guard !emittedBufferedEvents else { return }
+            emittedBufferedEvents = true
+            let events = bufferedEvents
+            bufferedEvents.removeAll()
+            for event in events {
+                await emit(event)
+            }
+        }
+    }
+
+    private static func runQueryWithResearchGuard(
+        prompt: String,
+        workspaceURL: URL,
+        resumeSessionID: String?,
+        retryPrompt: @escaping @Sendable () -> String,
+        retryResumeSessionID: String?,
+        runner: ClaudeQueryRunning,
+        logger: AppLogger,
+        logPrefix: String,
+        onRetry: @escaping @Sendable (String) async -> Void,
+        onEvent: @escaping @Sendable (ClaudeQueryEvent) async -> Void
+    ) async throws {
+        let firstAttempt = try await runBufferedQueryAttempt(
+            prompt: prompt,
+            workspaceURL: workspaceURL,
+            resumeSessionID: resumeSessionID,
+            runner: runner,
+            discardFinishedWithoutResearch: true,
+            onEvent: onEvent
+        )
+        if firstAttempt.finishedWithoutResearch {
+            logger.log("\(logPrefix): Claude answered without research tools; retrying once")
+            await onRetry("Retrying with wiki search required…")
+            let retryPromptText = retryPrompt()
+            let retryAttempt = try await runBufferedQueryAttempt(
+                prompt: retryPromptText,
+                workspaceURL: workspaceURL,
+                resumeSessionID: retryResumeSessionID,
+                runner: runner,
+                discardFinishedWithoutResearch: false,
+                onEvent: onEvent
+            )
+            guard retryAttempt.finishedWithoutResearch == false else { return }
+            if let message = retryAttempt.retryableIncompleteAnswerFailureMessage {
+                logger.log("\(logPrefix): Claude exited after research without an answer; retrying final answer once — \(message.prefix(160))")
+                await onRetry("Retrying after interrupted tool output…")
+                try await runner.runQuery(
+                    prompt: Self.finalAnswerRequiredRetryPrompt(for: retryPromptText),
+                    workspaceURL: workspaceURL,
+                    resumeSessionID: nil,
+                    onEvent: onEvent
+                )
+            }
+            return
+        }
+
+        if let message = firstAttempt.retryableIncompleteAnswerFailureMessage {
+            logger.log("\(logPrefix): Claude exited after research without an answer; retrying final answer once — \(message.prefix(160))")
+            await onRetry("Retrying after interrupted tool output…")
+            try await runner.runQuery(
+                prompt: Self.finalAnswerRequiredRetryPrompt(for: prompt),
+                workspaceURL: workspaceURL,
+                resumeSessionID: nil,
+                onEvent: onEvent
+            )
+        }
+    }
+
+    private static func runBufferedQueryAttempt(
+        prompt: String,
+        workspaceURL: URL,
+        resumeSessionID: String?,
+        runner: ClaudeQueryRunning,
+        discardFinishedWithoutResearch: Bool,
+        onEvent: @escaping @Sendable (ClaudeQueryEvent) async -> Void
+    ) async throws -> ResearchAttemptOutcome {
+        let buffer = ResearchAttemptBuffer()
+        do {
+            try await runner.runQuery(
+                prompt: prompt,
+                workspaceURL: workspaceURL,
+                resumeSessionID: resumeSessionID,
+                onEvent: { event in
+                    await buffer.handle(event, emit: onEvent)
+                }
+            )
+            return await buffer.finish(
+                emit: onEvent,
+                discardFinishedWithoutResearch: discardFinishedWithoutResearch
+            )
+        } catch {
+            await buffer.flush(emit: onEvent)
+            throw error
+        }
+    }
+
+    nonisolated private static func isResearchToolCall(_ event: ClaudeQueryEvent) -> Bool {
+        guard case .toolCall(let name) = event else { return false }
+        return researchToolNames.contains(name)
+    }
+
+    nonisolated private static func isRetryableIncompleteAnswerFailure(_ message: String) -> Bool {
+        message.contains("Claude exited before producing an answer")
+            || message.contains("Claude exited after a tool result without producing an answer")
+    }
+
+    nonisolated private static func researchRequiredRetryPrompt(for prompt: String) -> String {
+        """
+        Your previous answer was discarded because it did not use any research tools. Retry the request below.
+
+        Before answering, use at least one content research tool: Bash, Grep, Glob, Read, Task, WebSearch, or WebFetch. LS is allowed for navigation, but it does not count by itself. Search the local wiki first unless the request is explicitly about external or current information. Keep Bash output focused with search excerpts or bounded page reads instead of dumping long files unless the full text is essential. If you conclude the topic is not in the wiki, briefly state what you searched.
+
+        Request:
+        \(prompt)
+        """
+    }
+
+    nonisolated private static func finalAnswerRequiredRetryPrompt(for prompt: String) -> String {
+        """
+        Your previous research run used tools but Claude Code exited before producing a final answer. Retry the request below.
+
+        Use research tools as needed, keep Bash output focused with search excerpts or bounded page reads, and then produce the final answer. Search the local wiki first unless the request is explicitly about external or current information. If you conclude the topic is not in the wiki, briefly state what you searched.
+
+        Request:
+        \(prompt)
+        """
+    }
+
     private func normalizedHistory(_ records: [QueryHistoryRecord]) -> [QueryHistoryRecord] {
         var seenIDs: Set<UUID> = []
         let deduped = records
@@ -476,6 +727,7 @@ public final class AppModel {
         }
         let trimmed = target.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return }
+        logger.log("openWikiPage: target=\"\(trimmed)\"")
 
         if trimmed.contains("/") || trimmed.hasSuffix(".md") {
             let relative = trimmed.hasSuffix(".md") ? trimmed : trimmed + ".md"
@@ -485,11 +737,13 @@ public final class AppModel {
             if fileManager.fileExists(atPath: candidate.path) {
                 let result = openNoteHandler(relative, workspace.url)
                 lastError = noteOpenErrorMessage(for: result, relativePath: relative)
+                logger.log("openWikiPage: direct path opened relative=\(relative) result=\(String(describing: result))")
                 return
             }
         }
         let workspaceURL = workspace.url
         let runner = self.runner
+        let logger = self.logger
         Task { [weak self] in
             do {
                 let page = try await runner.page(locator: trimmed, at: workspaceURL)
@@ -497,10 +751,12 @@ public final class AppModel {
                     guard let self else { return }
                     let result = self.openNoteHandler(page.relativePath, workspaceURL)
                     self.lastError = self.noteOpenErrorMessage(for: result, relativePath: page.relativePath)
+                    logger.log("openWikiPage: resolved target=\"\(trimmed)\" -> \(page.relativePath) result=\(String(describing: result))")
                 }
             } catch {
                 await MainActor.run {
                     self?.lastError = "Could not resolve wiki page '\(trimmed)': \(error.localizedDescription)"
+                    logger.log("openWikiPage: failed target=\"\(trimmed)\" error=\(error.localizedDescription)")
                 }
             }
         }

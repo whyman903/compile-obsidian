@@ -79,6 +79,7 @@ private final class SuccessfulQueryRunner: ClaudeQueryRunning, @unchecked Sendab
         onEvent: @escaping @Sendable (ClaudeQueryEvent) async -> Void
     ) async throws {
         onRun()
+        await onEvent(.toolCall(name: "Grep"))
         await onEvent(.finished(
             text: "answer",
             costUSD: 0.01,
@@ -129,6 +130,7 @@ private final class CapturingQueryRunner: ClaudeQueryRunning, @unchecked Sendabl
             prompts.append(prompt)
             resumeIDs.append(resumeSessionID)
         }
+        await onEvent(.toolCall(name: "Grep"))
         await onEvent(.finished(
             text: "answer",
             costUSD: nil,
@@ -136,6 +138,42 @@ private final class CapturingQueryRunner: ClaudeQueryRunning, @unchecked Sendabl
             permissionDenials: [],
             sessionID: "claude-session-captured"
         ))
+    }
+}
+
+private final class ScriptedQueryRunner: ClaudeQueryRunning, @unchecked Sendable {
+    private let queue = DispatchQueue(label: "ScriptedQueryRunner")
+    private var scripts: [[ClaudeQueryEvent]]
+    private var prompts: [String] = []
+    private var resumeIDs: [String?] = []
+
+    init(scripts: [[ClaudeQueryEvent]]) {
+        self.scripts = scripts
+    }
+
+    var capturedPrompts: [String] {
+        queue.sync { prompts }
+    }
+
+    var capturedResumeSessionIDs: [String?] {
+        queue.sync { resumeIDs }
+    }
+
+    func runQuery(
+        prompt: String,
+        workspaceURL: URL,
+        resumeSessionID: String?,
+        onEvent: @escaping @Sendable (ClaudeQueryEvent) async -> Void
+    ) async throws {
+        let events = queue.sync {
+            prompts.append(prompt)
+            resumeIDs.append(resumeSessionID)
+            guard !scripts.isEmpty else { return [ClaudeQueryEvent]() }
+            return scripts.removeFirst()
+        }
+        for event in events {
+            await onEvent(event)
+        }
     }
 }
 
@@ -171,6 +209,7 @@ private final class ExpiringResumeQueryRunner: ClaudeQueryRunning, @unchecked Se
         if shouldFail {
             throw ClaudeQueryResumeUnavailableError(message: "Session not found")
         }
+        await onEvent(.toolCall(name: "Grep"))
         await onEvent(.finished(
             text: "fallback answer",
             costUSD: nil,
@@ -517,8 +556,8 @@ final class AppModelTests: XCTestCase {
         XCTAssertNil(model.queryHistory.first?.turns.first?.answer)
     }
 
-    func testQueryPromptDoesNotPrefetchWikiContext() async throws {
-        let workspaceURL = tempDirectory.appending(path: "wiki-source-context", directoryHint: .isDirectory)
+    func testQueryPromptPassesRawQuestionToClaude() async throws {
+        let workspaceURL = tempDirectory.appending(path: "wiki-raw-query", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
 
         let info = WorkspaceInfo(
@@ -531,16 +570,9 @@ final class AppModelTests: XCTestCase {
             needsDocumentReview: 0,
             wikiPageCount: 1
         )
-        let sourcePath = "wiki/sources/long-source.md"
         let fakeRunner = FakeCompileRunner(
             workspaceInfo: info,
-            pageResult: try makePage(
-                title: "Long Source",
-                relativePath: sourcePath,
-                pageType: "source",
-                body: "source detail that used to be preloaded",
-                summary: "source summary"
-            )
+            pageResult: try makePage(title: "Long Source", relativePath: "wiki/sources/long-source.md")
         )
         let queryRunner = CapturingQueryRunner()
         defaults.set(workspaceURL.path, forKey: "currentWorkspacePath")
@@ -549,7 +581,7 @@ final class AppModelTests: XCTestCase {
             runner: fakeRunner,
             dispatcher: NoopDispatcher(),
             queryRunner: queryRunner,
-            logger: AppLogger(logDirectory: tempDirectory.appending(path: "logs-source-context", directoryHint: .isDirectory)),
+            logger: AppLogger(logDirectory: tempDirectory.appending(path: "logs-raw-query", directoryHint: .isDirectory)),
             defaults: defaults,
             fileManager: .default,
             openWorkspaceHandler: { _ in .opened },
@@ -570,6 +602,341 @@ final class AppModelTests: XCTestCase {
         XCTAssertTrue(fakeRunner.requestedPageLocators.isEmpty)
         XCTAssertEqual(queryRunner.capturedResumeSessionIDs.count, 1)
         XCTAssertNil(queryRunner.capturedResumeSessionIDs[0])
+    }
+
+    func testZeroToolAnswerRetriesOnceAndPersistsRetryOutput() async throws {
+        let workspaceURL = tempDirectory.appending(path: "wiki-zero-tool-retry", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+
+        let info = WorkspaceInfo(
+            path: workspaceURL.path,
+            topic: "My Wiki",
+            description: "Test workspace",
+            rawFiles: 0,
+            processed: 0,
+            unprocessed: 0,
+            needsDocumentReview: 0,
+            wikiPageCount: 1
+        )
+        let queryRunner = ScriptedQueryRunner(
+            scripts: [
+                [
+                    .finished(
+                        text: "bad answer",
+                        costUSD: nil,
+                        durationMs: nil,
+                        permissionDenials: [],
+                        sessionID: "bad-session"
+                    ),
+                ],
+                [
+                    .toolCall(name: "Grep"),
+                    .finished(
+                        text: "researched answer",
+                        costUSD: nil,
+                        durationMs: nil,
+                        permissionDenials: [],
+                        sessionID: "retry-session"
+                    ),
+                ],
+            ]
+        )
+        defaults.set(workspaceURL.path, forKey: "currentWorkspacePath")
+
+        let model = AppModel(
+            runner: FakeCompileRunner(
+                workspaceInfo: info,
+                pageResult: try makePage(title: "Planner", relativePath: "wiki/articles/planner.md")
+            ),
+            dispatcher: NoopDispatcher(),
+            queryRunner: queryRunner,
+            logger: AppLogger(logDirectory: tempDirectory.appending(path: "logs-zero-tool-retry", directoryHint: .isDirectory)),
+            defaults: defaults,
+            fileManager: .default,
+            openWorkspaceHandler: { _ in .opened },
+            openNoteHandler: { _, _ in .opened },
+            openGraphHandler: { _ in .opened }
+        )
+
+        await model.bootstrapIfNeeded()
+        model.sendQuery("what's the difference between tcp and udp?")
+
+        await waitUntil {
+            model.querySession.status == .completed && queryRunner.capturedPrompts.count == 2
+        }
+
+        XCTAssertEqual(queryRunner.capturedPrompts[0], "what's the difference between tcp and udp?")
+        XCTAssertTrue(queryRunner.capturedPrompts[1].contains("did not use any research tools"))
+        XCTAssertTrue(queryRunner.capturedPrompts[1].contains("what's the difference between tcp and udp?"))
+        XCTAssertEqual(model.querySession.assistantText, "researched answer")
+        XCTAssertEqual(model.querySession.claudeSessionID, "retry-session")
+        XCTAssertEqual(model.queryHistory.first?.turns.map(\.answer), ["researched answer"])
+        XCTAssertFalse(model.queryHistory.first?.turns.contains { $0.answer == "bad answer" } ?? true)
+    }
+
+    func testRetryResultIsShownWhenRetryAlsoUsesNoTools() async throws {
+        let workspaceURL = tempDirectory.appending(path: "wiki-zero-tool-retry-visible", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+
+        let info = WorkspaceInfo(
+            path: workspaceURL.path,
+            topic: "My Wiki",
+            description: "Test workspace",
+            rawFiles: 0,
+            processed: 0,
+            unprocessed: 0,
+            needsDocumentReview: 0,
+            wikiPageCount: 1
+        )
+        let queryRunner = ScriptedQueryRunner(
+            scripts: [
+                [
+                    .finished(
+                        text: "bad answer",
+                        costUSD: nil,
+                        durationMs: nil,
+                        permissionDenials: [],
+                        sessionID: "bad-session"
+                    ),
+                ],
+                [
+                    .finished(
+                        text: "retry answer",
+                        costUSD: nil,
+                        durationMs: nil,
+                        permissionDenials: [],
+                        sessionID: "retry-session"
+                    ),
+                ],
+            ]
+        )
+        defaults.set(workspaceURL.path, forKey: "currentWorkspacePath")
+
+        let model = AppModel(
+            runner: FakeCompileRunner(
+                workspaceInfo: info,
+                pageResult: try makePage(title: "Planner", relativePath: "wiki/articles/planner.md")
+            ),
+            dispatcher: NoopDispatcher(),
+            queryRunner: queryRunner,
+            logger: AppLogger(logDirectory: tempDirectory.appending(path: "logs-zero-tool-retry-visible", directoryHint: .isDirectory)),
+            defaults: defaults,
+            fileManager: .default,
+            openWorkspaceHandler: { _ in .opened },
+            openNoteHandler: { _, _ in .opened },
+            openGraphHandler: { _ in .opened }
+        )
+
+        await model.bootstrapIfNeeded()
+        model.sendQuery("What changed?")
+
+        await waitUntil {
+            model.querySession.status == .completed && queryRunner.capturedPrompts.count == 2
+        }
+
+        XCTAssertEqual(queryRunner.capturedPrompts.count, 2)
+        XCTAssertEqual(model.querySession.assistantText, "retry answer")
+        XCTAssertEqual(model.querySession.claudeSessionID, "retry-session")
+        XCTAssertEqual(model.queryHistory.first?.turns.map(\.answer), ["retry answer"])
+    }
+
+    func testLSOnlyAnswerRetriesBecauseItDoesNotSearchContent() async throws {
+        let workspaceURL = tempDirectory.appending(path: "wiki-ls-only-retry", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+
+        let info = WorkspaceInfo(
+            path: workspaceURL.path,
+            topic: "My Wiki",
+            description: "Test workspace",
+            rawFiles: 0,
+            processed: 0,
+            unprocessed: 0,
+            needsDocumentReview: 0,
+            wikiPageCount: 1
+        )
+        let queryRunner = ScriptedQueryRunner(
+            scripts: [
+                [
+                    .toolCall(name: "LS"),
+                    .finished(
+                        text: "directory-only answer",
+                        costUSD: nil,
+                        durationMs: nil,
+                        permissionDenials: [],
+                        sessionID: "ls-session"
+                    ),
+                ],
+                [
+                    .toolCall(name: "Grep"),
+                    .finished(
+                        text: "content-searched answer",
+                        costUSD: nil,
+                        durationMs: nil,
+                        permissionDenials: [],
+                        sessionID: "grep-session"
+                    ),
+                ],
+            ]
+        )
+        defaults.set(workspaceURL.path, forKey: "currentWorkspacePath")
+
+        let model = AppModel(
+            runner: FakeCompileRunner(
+                workspaceInfo: info,
+                pageResult: try makePage(title: "Planner", relativePath: "wiki/articles/planner.md")
+            ),
+            dispatcher: NoopDispatcher(),
+            queryRunner: queryRunner,
+            logger: AppLogger(logDirectory: tempDirectory.appending(path: "logs-ls-only-retry", directoryHint: .isDirectory)),
+            defaults: defaults,
+            fileManager: .default,
+            openWorkspaceHandler: { _ in .opened },
+            openNoteHandler: { _, _ in .opened },
+            openGraphHandler: { _ in .opened }
+        )
+
+        await model.bootstrapIfNeeded()
+        model.sendQuery("Count all notes about TCP")
+
+        await waitUntil {
+            model.querySession.status == .completed && queryRunner.capturedPrompts.count == 2
+        }
+
+        XCTAssertEqual(queryRunner.capturedPrompts[0], "Count all notes about TCP")
+        XCTAssertTrue(queryRunner.capturedPrompts[1].contains("did not use any research tools"))
+        XCTAssertEqual(model.querySession.toolCalls, ["Grep"])
+        XCTAssertEqual(model.querySession.assistantText, "content-searched answer")
+    }
+
+    func testRetryAfterResearchToolExitWithoutAnswerGetsFinalFreshAttempt() async throws {
+        let workspaceURL = tempDirectory.appending(path: "wiki-tool-output-exit-retry", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+
+        let info = WorkspaceInfo(
+            path: workspaceURL.path,
+            topic: "My Wiki",
+            description: "Test workspace",
+            rawFiles: 0,
+            processed: 0,
+            unprocessed: 0,
+            needsDocumentReview: 0,
+            wikiPageCount: 1
+        )
+        let queryRunner = ScriptedQueryRunner(
+            scripts: [
+                [
+                    .finished(
+                        text: "not searched",
+                        costUSD: nil,
+                        durationMs: nil,
+                        permissionDenials: [],
+                        sessionID: "no-tool-session"
+                    ),
+                ],
+                [
+                    .toolCall(name: "Bash"),
+                    .toolResult(preview: "System design networking page"),
+                    .failed(message: "Claude exited before producing an answer. The last stream output was incomplete or not valid JSON:")
+                ],
+                [
+                    .toolCall(name: "Grep"),
+                    .finished(
+                        text: "final researched answer",
+                        costUSD: nil,
+                        durationMs: nil,
+                        permissionDenials: [],
+                        sessionID: "final-session"
+                    ),
+                ],
+            ]
+        )
+        defaults.set(workspaceURL.path, forKey: "currentWorkspacePath")
+
+        let model = AppModel(
+            runner: FakeCompileRunner(
+                workspaceInfo: info,
+                pageResult: try makePage(title: "Planner", relativePath: "wiki/articles/planner.md")
+            ),
+            dispatcher: NoopDispatcher(),
+            queryRunner: queryRunner,
+            logger: AppLogger(logDirectory: tempDirectory.appending(path: "logs-tool-output-exit-retry", directoryHint: .isDirectory)),
+            defaults: defaults,
+            fileManager: .default,
+            openWorkspaceHandler: { _ in .opened },
+            openNoteHandler: { _, _ in .opened },
+            openGraphHandler: { _ in .opened }
+        )
+
+        await model.bootstrapIfNeeded()
+        model.sendQuery("What's the difference between TCP and UDP?")
+
+        await waitUntil {
+            model.querySession.status == .completed && queryRunner.capturedPrompts.count == 3
+        }
+
+        XCTAssertEqual(queryRunner.capturedResumeSessionIDs, [nil, nil, nil])
+        XCTAssertTrue(queryRunner.capturedPrompts[1].contains("did not use any research tools"))
+        XCTAssertTrue(queryRunner.capturedPrompts[2].contains("exited before producing a final answer"))
+        XCTAssertTrue(queryRunner.capturedPrompts[2].contains("What's the difference between TCP and UDP?"))
+        XCTAssertEqual(model.querySession.status, .completed)
+        XCTAssertEqual(model.querySession.assistantText, "final researched answer")
+        XCTAssertEqual(model.queryHistory.first?.turns.map(\.answer), ["final researched answer"])
+    }
+
+    func testToolUsingAnswerDoesNotRetry() async throws {
+        let workspaceURL = tempDirectory.appending(path: "wiki-tool-no-retry", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+
+        let info = WorkspaceInfo(
+            path: workspaceURL.path,
+            topic: "My Wiki",
+            description: "Test workspace",
+            rawFiles: 0,
+            processed: 0,
+            unprocessed: 0,
+            needsDocumentReview: 0,
+            wikiPageCount: 1
+        )
+        let queryRunner = ScriptedQueryRunner(
+            scripts: [
+                [
+                    .toolCall(name: "Bash"),
+                    .finished(
+                        text: "researched once",
+                        costUSD: nil,
+                        durationMs: nil,
+                        permissionDenials: [],
+                        sessionID: "single-session"
+                    ),
+                ],
+            ]
+        )
+        defaults.set(workspaceURL.path, forKey: "currentWorkspacePath")
+
+        let model = AppModel(
+            runner: FakeCompileRunner(
+                workspaceInfo: info,
+                pageResult: try makePage(title: "Planner", relativePath: "wiki/articles/planner.md")
+            ),
+            dispatcher: NoopDispatcher(),
+            queryRunner: queryRunner,
+            logger: AppLogger(logDirectory: tempDirectory.appending(path: "logs-tool-no-retry", directoryHint: .isDirectory)),
+            defaults: defaults,
+            fileManager: .default,
+            openWorkspaceHandler: { _ in .opened },
+            openNoteHandler: { _, _ in .opened },
+            openGraphHandler: { _ in .opened }
+        )
+
+        await model.bootstrapIfNeeded()
+        model.sendQuery("Find all notes about GRPO")
+
+        await waitUntil {
+            model.querySession.status == .completed && queryRunner.capturedPrompts.count == 1
+        }
+
+        XCTAssertEqual(queryRunner.capturedPrompts, ["Find all notes about GRPO"])
+        XCTAssertEqual(model.querySession.assistantText, "researched once")
     }
 
     func testFollowUpUsesClaudeSessionInsteadOfSerializedHistory() async throws {
@@ -665,6 +1032,74 @@ final class AppModelTests: XCTestCase {
         XCTAssertEqual(queryRunner.capturedPrompts, ["Continue this"])
         XCTAssertEqual(queryRunner.capturedResumeSessionIDs.count, 1)
         XCTAssertEqual(queryRunner.capturedResumeSessionIDs[0], "restored-claude-session")
+    }
+
+    func testFollowUpZeroToolAnswerRetriesWithPersistedClaudeSessionID() async throws {
+        let workspaceURL = tempDirectory.appending(path: "wiki-followup-zero-tool", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+        defaults.set(workspaceURL.path, forKey: "currentWorkspacePath")
+
+        let record = QueryHistoryRecord(
+            turns: [QueryTurn(question: "Original question", answer: "Original answer cited [[Planner]].")],
+            claudeSessionID: "restored-claude-session"
+        )
+        try writeHistory([record], to: workspaceURL)
+
+        let queryRunner = ScriptedQueryRunner(
+            scripts: [
+                [
+                    .finished(
+                        text: "follow-up without search",
+                        costUSD: nil,
+                        durationMs: nil,
+                        permissionDenials: [],
+                        sessionID: "first-followup-session"
+                    ),
+                ],
+                [
+                    .toolCall(name: "Task"),
+                    .finished(
+                        text: "follow-up researched",
+                        costUSD: nil,
+                        durationMs: nil,
+                        permissionDenials: [],
+                        sessionID: "retry-followup-session"
+                    ),
+                ],
+            ]
+        )
+        let model = AppModel(
+            runner: DynamicCompileRunner(pageResult: try makePage(title: "Planner", relativePath: "wiki/articles/planner.md")),
+            dispatcher: NoopDispatcher(),
+            queryRunner: queryRunner,
+            logger: AppLogger(logDirectory: tempDirectory.appending(path: "logs-followup-zero-tool", directoryHint: .isDirectory)),
+            defaults: defaults,
+            fileManager: .default,
+            openWorkspaceHandler: { _ in .opened },
+            openNoteHandler: { _, _ in .opened },
+            openGraphHandler: { _ in .opened }
+        )
+
+        await model.bootstrapIfNeeded()
+        model.selectHistorySession(record)
+        model.sendFollowUp("Continue this")
+
+        await waitUntil {
+            model.querySession.status == .completed && queryRunner.capturedPrompts.count == 2
+        }
+
+        XCTAssertEqual(queryRunner.capturedResumeSessionIDs, [
+            "restored-claude-session",
+            nil,
+        ])
+        XCTAssertEqual(queryRunner.capturedPrompts[0], "Continue this")
+        XCTAssertTrue(queryRunner.capturedPrompts[1].contains("did not use any research tools"))
+        XCTAssertTrue(queryRunner.capturedPrompts[1].contains("Prior research covered: [[Planner]]."))
+        XCTAssertTrue(queryRunner.capturedPrompts[1].contains("Continue this"))
+        XCTAssertEqual(model.querySession.turns.map(\.answer), [
+            "Original answer cited [[Planner]].",
+            "follow-up researched",
+        ])
     }
 
     func testFollowUpFromLegacyRestoredHistoryStartsFreshWithoutTranscript() async throws {

@@ -28,15 +28,18 @@ public struct ClaudeQueryResumeUnavailableError: Error, LocalizedError, Equatabl
 public final class ClaudeQueryRunner: ClaudeQueryRunning, @unchecked Sendable {
     private let logger: AppLogger
     private let executableProvider: @Sendable () -> URL
+    private let transcriptRootProvider: @Sendable () -> URL
     private let optionSupportLock = NSLock()
     private var optionSupportCache: [String: Bool] = [:]
 
     public init(
         logger: AppLogger,
-        executableProvider: @escaping @Sendable () -> URL = ClaudeQueryRunner.defaultExecutable
+        executableProvider: @escaping @Sendable () -> URL = ClaudeQueryRunner.defaultExecutable,
+        transcriptRootProvider: @escaping @Sendable () -> URL = ClaudeQueryRunner.defaultTranscriptRoot
     ) {
         self.logger = logger
         self.executableProvider = executableProvider
+        self.transcriptRootProvider = transcriptRootProvider
     }
 
     public static func defaultExecutable() -> URL {
@@ -46,14 +49,35 @@ public final class ClaudeQueryRunner: ClaudeQueryRunning, @unchecked Sendable {
         return URL(fileURLWithPath: "/usr/bin/env")
     }
 
+    public static func defaultTranscriptRoot() -> URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appending(path: ".claude", directoryHint: .isDirectory)
+    }
+
     public static let wikiSystemPromptAddendum = """
-        You are a read-only researcher working inside the user's personal Obsidian wiki workspace. \
-        The wiki is your preferred evidence base, not a hard boundary on what you can answer. Work directly: \
-        do not use subagents, Task, or interactive question tools. Search with Grep and Glob, \
-        read evidence with Read, follow [[wikilinks]], and use backlink grep when useful. \
-        PDF source notes may contain collapsed `> [!abstract]- Full extracted text` callouts; \
-        search and read those callouts when PDF detail matters. For backlink search, Grep \
-        the escaped pattern `\\[\\[Page Title\\]\\]`.
+        You are an agentic researcher working inside the user's personal Obsidian wiki workspace. \
+        Query mode is research-only: do not edit, write, ingest, refresh, render, save files, \
+        or otherwise mutate the workspace. Full Bash is trusted for research, but treat shell \
+        commands as read-only. Use Bash, Task subagents, Grep, Glob, LS, Read, WebSearch, and \
+        WebFetch when useful. Prefer the wiki first, then fill gaps from web-backed or general \
+        knowledge with clear labels. \
+        Use `compile obsidian search`, `compile obsidian page`, and `compile obsidian neighbors` \
+        through Bash for semantic wiki discovery and page reads; if the global `compile` command \
+        is unavailable, use `uv run compile ...`. Use `rg`, `find`, `stat`, `wc`, and read-only \
+        shell inspection to enumerate local files, count matches, inspect recent uploads, and \
+        follow raw source paths. Keep shell output focused: prefer `rg -n -C`, `head`, `sed -n`, \
+        `wc`, targeted `compile obsidian search`, and bounded page excerpts over dumping entire \
+        long files unless the full text is necessary. \
+        Source notes in `wiki/sources/` contain a short synopsis plus a collapsed \
+        `> [!abstract]- Full extracted text` callout holding the extracted content of \
+        the underlying raw file (PDF, Notion page, fetched URL, etc.). The callout is \
+        usually faithful but not guaranteed complete — some extraction paths drop \
+        fenced code, images, or embeds. Always Grep inside those callouts — not just \
+        the synopsis — before concluding a topic isn't in the wiki, and if a source \
+        note is thin, the callout is missing, or the hit looks truncated, fall back \
+        to Grep and Read over `raw/` (including `raw/notion/` UUID-named files) \
+        before answering from general knowledge. For backlink search, Grep the \
+        escaped pattern `\\[\\[Page Title\\]\\]`.
 
         Prefer useful, rich Markdown over a plain paragraph:
         - Use short sections when the answer has multiple parts.
@@ -61,21 +85,28 @@ public final class ClaudeQueryRunner: ClaudeQueryRunning, @unchecked Sendable {
         - Use Mermaid diagrams for compact process flows, causal chains, or relationship maps.
         - Use Obsidian callouts for notable caveats, open questions, or recommendations.
 
+        Use the right research pattern for the request:
+        - For "explain the difference between X and Y", search each term and likely aliases, then compare the best wiki evidence.
+        - For "how many notes" or "find them all", enumerate and dedupe matching wiki paths, then explain the counting rule.
+        - For recent uploads or fuzzy memory such as "a paper from last week about GRPO", inspect file metadata and source/raw paths with `stat`, `find`, `rg`, and wiki search.
+        - For broad/deep questions, use Task subagents to parallelize independent searches or source-reading passes.
+        - Before saying a topic is not in the wiki, run at least one meaningful local wiki/raw search and briefly state what you searched.
+
         Always answer the user's question. Search the wiki first and prefer wiki-grounded \
         answers: when the wiki covers a claim, cite it inline with an Obsidian [[Page Title]] \
         wikilink to the page you read it from, for example: The policy shift was driven by X \
         ([[Policy Timeline]]). When the wiki partially covers the question, use the wiki for \
-        what it supports and answer the rest from general knowledge — make clear which claims \
-        are wiki-backed (with `[[wikilinks]]`) and which are from general knowledge (briefly \
-        note "not in your wiki" for those). When the wiki does not cover the question at all, \
-        answer from general knowledge and note upfront that the topic is not in the wiki. \
-        If quick wiki searches turn up nothing relevant, stop digging and answer directly. \
+        what it supports and answer the rest from web search or general knowledge. Make clear \
+        which claims are wiki-backed (with `[[wikilinks]]`), which are web-backed, and which are \
+        general knowledge. When the wiki does not cover the question at all, answer from web-backed \
+        or general knowledge and note upfront that the topic is not in your wiki. \
+        Use WebSearch/WebFetch when the user asks for current or external information, or when \
+        the wiki is insufficient and current external grounding would materially improve the answer. \
         Do not refuse to answer a question just because it is not in the wiki. Do not say \
         you cannot answer because of your role, because the topic is outside the wiki, or \
         because of a knowledge cutoff unless the user explicitly asks about freshness or a \
         time-sensitive fact. Do not claim to save files or update the wiki from this query \
-        response. Do not edit, write, ingest, refresh, render, save files, or otherwise \
-        mutate the workspace.
+        response. Do not use Edit, Write, MultiEdit, NotebookEdit, or mutating Bash commands.
         """
 
     public func runQuery(
@@ -93,9 +124,8 @@ public final class ClaudeQueryRunner: ClaudeQueryRunning, @unchecked Sendable {
             "-p",
             "--output-format", "stream-json",
             "--verbose",
-            "--settings", #"{"disableAllHooks":true}"#,
-            "--allowedTools", "Read,Grep,Glob,LS",
-            "--disallowedTools", "Task,AskUserQuestion,Monitor,Bash,Edit,Write,NotebookEdit,MultiEdit,WebSearch,WebFetch",
+            "--allowedTools", "Read,Grep,Glob,LS,Bash,Task,WebSearch,WebFetch",
+            "--disallowedTools", "AskUserQuestion,Monitor,Edit,Write,NotebookEdit,MultiEdit",
             "--model", "sonnet",
             "--append-system-prompt", Self.wikiSystemPromptAddendum,
             prompt,
@@ -142,6 +172,9 @@ public final class ClaudeQueryRunner: ClaudeQueryRunning, @unchecked Sendable {
                     case .parsed(let lineSummary):
                         summary.sawAssistantText = summary.sawAssistantText || lineSummary.emittedAssistantText
                         summary.sawFinished = summary.sawFinished || lineSummary.emittedFinished
+                        if let sessionID = lineSummary.sessionID, !sessionID.isEmpty {
+                            summary.sessionID = sessionID
+                        }
                         if let text = lineSummary.textOnlyAssistantText {
                             summary.lastTextOnlyAssistantText = text
                         }
@@ -201,7 +234,22 @@ public final class ClaudeQueryRunner: ClaudeQueryRunning, @unchecked Sendable {
             }
             await onEvent(.failed(message: message))
         } else if !stdoutSummary.sawFinished {
-            if let recoveredText = Self.recoverAssistantText(fromUnparsedTail: stdoutTail) {
+            if let recovered = await Self.recoverTranscriptAnswer(
+                sessionID: stdoutSummary.sessionID,
+                workspaceURL: workspaceURL,
+                transcriptRoot: transcriptRootProvider(),
+                logger: logger
+            ) {
+                logger.log("ClaudeQueryRunner recovered final answer from Claude transcript for session \(recovered.sessionID)")
+                await onEvent(.assistantText(recovered.text))
+                await onEvent(.finished(
+                    text: recovered.text,
+                    costUSD: nil,
+                    durationMs: nil,
+                    permissionDenials: [],
+                    sessionID: recovered.sessionID
+                ))
+            } else if let recoveredText = Self.recoverAssistantText(fromUnparsedTail: stdoutTail) {
                 logger.log("ClaudeQueryRunner recovered final assistant text from incomplete stream JSON")
                 await onEvent(.assistantText(recoveredText))
                 await onEvent(.finished(
@@ -211,9 +259,9 @@ public final class ClaudeQueryRunner: ClaudeQueryRunning, @unchecked Sendable {
                     permissionDenials: [],
                     sessionID: nil
                 ))
-            } else if stdoutTail.isEmpty,
-                      let text = stdoutSummary.lastTextOnlyAssistantText?.trimmingCharacters(in: .whitespacesAndNewlines),
-                      !text.isEmpty {
+            } else if let text = stdoutSummary.lastTextOnlyAssistantText?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !text.isEmpty,
+                      stdoutTail.isEmpty {
                 logger.log("ClaudeQueryRunner: result event missing; completing from final text-only assistant message")
                 await onEvent(.finished(
                     text: text,
@@ -236,7 +284,13 @@ public final class ClaudeQueryRunner: ClaudeQueryRunning, @unchecked Sendable {
             logger.log("ClaudeQueryRunner stderr (ignored): \(stderrTail)")
         }
         let elapsed = Date().timeIntervalSince(queryStart)
-        logger.log("ClaudeQueryRunner: query finished in \(String(format: "%.1f", elapsed))s (exit \(process.terminationStatus))")
+        let reasonLabel: String
+        switch process.terminationReason {
+        case .exit: reasonLabel = "exit"
+        case .uncaughtSignal: reasonLabel = "uncaughtSignal"
+        @unknown default: reasonLabel = "unknown"
+        }
+        logger.log("ClaudeQueryRunner: query finished in \(String(format: "%.1f", elapsed))s (exit \(process.terminationStatus), reason \(reasonLabel))")
     }
 
     private static func runProcess(_ process: Process) async throws {
@@ -304,6 +358,7 @@ public final class ClaudeQueryRunner: ClaudeQueryRunning, @unchecked Sendable {
         var unparsedBuffer = Data()
         var sawAssistantText = false
         var sawFinished = false
+        var sessionID: String?
         var lastTextOnlyAssistantText: String?
         var lastToolResultPreview: String?
 
@@ -325,6 +380,7 @@ public final class ClaudeQueryRunner: ClaudeQueryRunning, @unchecked Sendable {
     private struct StreamLineSummary: Sendable {
         var emittedAssistantText = false
         var emittedFinished = false
+        var sessionID: String?
         var textOnlyAssistantText: String?
         var toolResultPreview: String?
     }
@@ -346,6 +402,7 @@ public final class ClaudeQueryRunner: ClaudeQueryRunning, @unchecked Sendable {
             return .unparsed
         }
         var summary = StreamLineSummary()
+        summary.sessionID = json["session_id"] as? String
         switch type {
         case "assistant":
             guard let message = json["message"] as? [String: Any],
@@ -491,11 +548,115 @@ public final class ClaudeQueryRunner: ClaudeQueryRunning, @unchecked Sendable {
         return nil
     }
 
+    private struct TranscriptRecovery: Sendable {
+        let text: String
+        let sessionID: String
+    }
+
+    private static func recoverTranscriptAnswer(
+        sessionID: String?,
+        workspaceURL: URL,
+        transcriptRoot: URL,
+        logger: AppLogger
+    ) async -> TranscriptRecovery? {
+        guard let sessionID, !sessionID.isEmpty else {
+            return nil
+        }
+
+        let transcriptURL = transcriptURL(
+            sessionID: sessionID,
+            workspaceURL: workspaceURL,
+            transcriptRoot: transcriptRoot
+        )
+
+        for attempt in 0..<5 {
+            if let text = readFinalAssistantTextAfterLatestToolResult(from: transcriptURL) {
+                return TranscriptRecovery(text: text, sessionID: sessionID)
+            }
+            if attempt < 4 {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+        }
+
+        logger.log("ClaudeQueryRunner transcript recovery found no final answer at \(transcriptURL.path)")
+        return nil
+    }
+
+    private static func transcriptURL(
+        sessionID: String,
+        workspaceURL: URL,
+        transcriptRoot: URL
+    ) -> URL {
+        let projectName = workspaceURL.standardizedFileURL.path
+            .replacingOccurrences(of: "/", with: "-")
+        return transcriptRoot
+            .appending(path: "projects", directoryHint: .isDirectory)
+            .appending(path: projectName, directoryHint: .isDirectory)
+            .appending(path: "\(sessionID).jsonl", directoryHint: .notDirectory)
+    }
+
+    private static func readFinalAssistantTextAfterLatestToolResult(from url: URL) -> String? {
+        guard let data = try? Data(contentsOf: url),
+              let contents = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+
+        var answerAfterLatestTool: String?
+        var sawToolResult = false
+
+        for line in contents.split(separator: "\n", omittingEmptySubsequences: true) {
+            guard let lineData = String(line).data(using: .utf8),
+                  let any = try? JSONSerialization.jsonObject(with: lineData),
+                  let json = any as? [String: Any],
+                  let type = json["type"] as? String,
+                  let message = json["message"] as? [String: Any],
+                  let content = message["content"] as? [[String: Any]] else {
+                continue
+            }
+
+            if type == "user", content.contains(where: { ($0["type"] as? String) == "tool_result" }) {
+                sawToolResult = true
+                answerAfterLatestTool = nil
+                continue
+            }
+
+            guard type == "assistant" else {
+                continue
+            }
+
+            if content.contains(where: { ($0["type"] as? String) == "tool_use" }) {
+                answerAfterLatestTool = nil
+                continue
+            }
+
+            let text = content
+                .compactMap { block -> String? in
+                    guard (block["type"] as? String) == "text" else { return nil }
+                    return block["text"] as? String
+                }
+                .joined()
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+
+            if sawToolResult, !text.isEmpty {
+                answerAfterLatestTool = text
+            }
+        }
+
+        return answerAfterLatestTool
+    }
+
     private static func emptySuccessfulRunMessage(
         stdoutSummary: StdoutSummary,
         stderrTail: String
     ) -> String {
         let stdoutTail = stdoutSummary.unparsedTail.trimmingCharacters(in: .whitespacesAndNewlines)
+        if looksLikeTruncatedUserToolResult(stdoutTail) {
+            var message = "Claude exited before producing an answer. The stream was cut off mid-tool-result — this is usually a transient Claude CLI error, please retry."
+            if !stderrTail.isEmpty {
+                message += "\n\nstderr:\n\(diagnosticPreview(stderrTail))"
+            }
+            return message
+        }
         if !stdoutTail.isEmpty {
             return """
             Claude exited before producing an answer. The last stream output was incomplete or not valid JSON:
@@ -519,6 +680,20 @@ public final class ClaudeQueryRunner: ClaudeQueryRunning, @unchecked Sendable {
             """
         }
         return "Claude exited before producing an answer."
+    }
+
+    private static func looksLikeTruncatedUserToolResult(_ tail: String) -> Bool {
+        let trimmed = tail.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        let lastLine = trimmed
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .last
+            .map(String.init)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? trimmed
+        guard lastLine.hasPrefix(#"{"type":"user""#) else { return false }
+        guard lastLine.contains(#""tool_result""#) else { return false }
+        guard let data = lastLine.data(using: .utf8) else { return true }
+        return (try? JSONSerialization.jsonObject(with: data)) == nil
     }
 
     private static func diagnosticPreview(_ text: String, limit: Int = 800) -> String {
