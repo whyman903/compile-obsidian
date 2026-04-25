@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import MyWikiCore
 
@@ -8,26 +9,37 @@ struct QueryDetailView: View {
     @State private var showSettings = false
     @FocusState private var isInputFocused: Bool
 
-    var body: some View {
-        HStack(spacing: 0) {
-            if sidebarVisible {
-                historySidebar
-                    .frame(width: 200)
-                    .transition(.move(edge: .leading))
-                Divider().overlay(EditorialPalette.border)
-            }
+    private let minSidebarWidth: CGFloat = 140
+    private let maxSidebarWidth: CGFloat = 420
+    private let topBarHeight: CGFloat = 42
 
-            VStack(spacing: 0) {
-                toolbar
-                Divider().overlay(EditorialPalette.border)
-                if showSettings {
-                    SettingsView(model: model, onDismiss: { showSettings = false })
-                } else {
-                    conversationArea
-                    bottomPanel
+    var body: some View {
+        ZStack(alignment: .top) {
+            SplitViewContainer(
+                sidebarCollapsed: !sidebarVisible,
+                minSidebarWidth: minSidebarWidth,
+                maxSidebarWidth: maxSidebarWidth,
+                autosaveName: "MyWikiSidebar"
+            ) {
+                historySidebar
+            } detail: {
+                VStack(spacing: 0) {
+                    if showSettings {
+                        SettingsView(model: model, onDismiss: { showSettings = false })
+                    } else {
+                        conversationArea
+                        bottomPanel
+                    }
                 }
             }
+            .padding(.top, topBarHeight)
+
+            topBar
+                .frame(height: topBarHeight)
+                .frame(maxWidth: .infinity, alignment: .top)
         }
+        .ignoresSafeArea(.all, edges: .top)
+        .background(WindowChromeConfigurator())
         .background(EditorialPalette.background)
         .id("\(model.theme.rawValue).\(model.font.rawValue)")
         .preferredColorScheme(model.theme.prefersDarkMode ? .dark : .light)
@@ -45,61 +57,52 @@ struct QueryDetailView: View {
         }
     }
 
-    // MARK: - Toolbar
+    // MARK: - Top bar
 
-    private var toolbar: some View {
-        HStack(spacing: 12) {
-            Button(action: {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    sidebarVisible.toggle()
+    private var topBar: some View {
+        HStack(spacing: 4) {
+            Color.clear.frame(width: 70, height: 1)
+
+            ChromeIconButton(
+                systemName: "sidebar.left",
+                isActive: sidebarVisible,
+                help: sidebarVisible ? "Hide history" : "Show history"
+            ) {
+                sidebarVisible.toggle()
+            }
+
+            Spacer(minLength: 12)
+
+            TitleChip(
+                text: model.querySession.firstQuestion.isEmpty
+                    ? "New Query"
+                    : String(model.querySession.firstQuestion.prefix(50))
+            )
+
+            Spacer(minLength: 12)
+
+            HStack(spacing: 2) {
+                ChromeIconButton(
+                    systemName: "plus",
+                    isActive: false,
+                    help: "New query"
+                ) {
+                    model.startNewQuery()
+                    followUpText = ""
+                    isInputFocused = true
                 }
-            }) {
-                Image(systemName: "sidebar.left")
-                    .font(.system(size: 12))
-                    .foregroundStyle(sidebarVisible
-                                    ? EditorialPalette.accent
-                                    : EditorialPalette.textTertiary)
+
+                ChromeIconButton(
+                    systemName: "gearshape",
+                    isActive: showSettings,
+                    help: showSettings ? "Back" : "Settings"
+                ) {
+                    showSettings.toggle()
+                }
             }
-            .buttonStyle(.plain)
-            .help(sidebarVisible ? "Hide history" : "Show history")
-
-            Spacer()
-
-            Text(model.querySession.firstQuestion.isEmpty
-                 ? "New Query"
-                 : String(model.querySession.firstQuestion.prefix(50)))
-                .font(.system(size: 13, weight: .medium, design: activeFont.design))
-                .foregroundStyle(EditorialPalette.textSecondary)
-                .lineLimit(1)
-                .truncationMode(.tail)
-
-            Spacer()
-
-            Button(action: {
-                model.startNewQuery()
-                followUpText = ""
-                isInputFocused = true
-            }) {
-                Image(systemName: "plus")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(EditorialPalette.textTertiary)
-            }
-            .buttonStyle(.plain)
-            .help("New query")
-
-            Button(action: { showSettings.toggle() }) {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 12, weight: .regular))
-                    .foregroundStyle(showSettings
-                                    ? EditorialPalette.accent
-                                    : EditorialPalette.textTertiary)
-            }
-            .buttonStyle(.plain)
-            .help(showSettings ? "Back" : "Settings")
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .background(EditorialPalette.backgroundTop)
+        .padding(.horizontal, 10)
+        .frame(maxWidth: .infinity)
     }
 
     // MARK: - Conversation
@@ -371,6 +374,230 @@ struct QueryDetailView: View {
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 4)
+    }
+}
+
+private struct ChromeIconButton: View {
+    let systemName: String
+    let isActive: Bool
+    let help: String
+    let action: () -> Void
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(iconColor)
+                .frame(width: 30, height: 26)
+                .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        }
+        .buttonStyle(ChromeIconButtonStyle(
+            isActive: isActive,
+            isHovering: isHovering
+        ))
+        .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.14)) {
+                isHovering = hovering
+            }
+        }
+        .help(help)
+    }
+
+    private var iconColor: Color {
+        if isActive { return EditorialPalette.accent }
+        if isHovering { return EditorialPalette.textPrimary }
+        return EditorialPalette.textSecondary
+    }
+}
+
+private struct ChromeIconButtonStyle: ButtonStyle {
+    let isActive: Bool
+    let isHovering: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(fillColor(pressed: configuration.isPressed))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .strokeBorder(strokeColor, lineWidth: 0.5)
+                    )
+                    .shadow(
+                        color: shadowColor,
+                        radius: shadowRadius,
+                        x: 0,
+                        y: shadowOffset
+                    )
+                    .opacity(showsBackground(pressed: configuration.isPressed) ? 1 : 0)
+            }
+            .scaleEffect(configuration.isPressed ? 0.93 : 1.0)
+            .animation(.spring(response: 0.18, dampingFraction: 0.7),
+                       value: configuration.isPressed)
+    }
+
+    private func showsBackground(pressed: Bool) -> Bool {
+        isActive || isHovering || pressed
+    }
+
+    private func fillColor(pressed: Bool) -> Color {
+        if pressed {
+            return EditorialPalette.textPrimary.opacity(0.18)
+        }
+        if isActive {
+            return EditorialPalette.accent.opacity(0.14)
+        }
+        if isHovering {
+            return EditorialPalette.textPrimary.opacity(0.08)
+        }
+        return Color.clear
+    }
+
+    private var strokeColor: Color {
+        if isActive {
+            return EditorialPalette.accent.opacity(0.22)
+        }
+        if isHovering {
+            return EditorialPalette.textPrimary.opacity(0.08)
+        }
+        return Color.clear
+    }
+
+    private var shadowColor: Color {
+        guard isHovering || isActive else { return .clear }
+        return Color.black.opacity(0.06)
+    }
+
+    private var shadowRadius: CGFloat {
+        isHovering || isActive ? 4 : 0
+    }
+
+    private var shadowOffset: CGFloat {
+        isHovering || isActive ? 1 : 0
+    }
+}
+
+private struct TitleChip: View {
+    let text: String
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 12.5, weight: .medium, design: activeFont.design))
+            .foregroundStyle(EditorialPalette.textSecondary)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 4)
+            .background {
+                Capsule(style: .continuous)
+                    .fill(EditorialPalette.surface.opacity(isHovering ? 0.85 : 0.65))
+                    .overlay(
+                        Capsule(style: .continuous)
+                            .strokeBorder(
+                                EditorialPalette.border.opacity(isHovering ? 0.55 : 0.35),
+                                lineWidth: 0.5
+                            )
+                    )
+                    .shadow(color: Color.black.opacity(0.05), radius: 3, x: 0, y: 1)
+            }
+            .onHover { hovering in
+                withAnimation(.easeOut(duration: 0.14)) {
+                    isHovering = hovering
+                }
+            }
+    }
+}
+
+private struct WindowChromeConfigurator: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        DispatchQueue.main.async { configure(view.window) }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async { configure(nsView.window) }
+    }
+
+    private func configure(_ window: NSWindow?) {
+        guard let window else { return }
+        window.titlebarAppearsTransparent = true
+        window.styleMask.insert(.fullSizeContentView)
+        window.titleVisibility = .hidden
+        window.isMovableByWindowBackground = true
+    }
+}
+
+private struct SplitViewContainer<Sidebar: View, Detail: View>: NSViewControllerRepresentable {
+    let sidebarCollapsed: Bool
+    let minSidebarWidth: CGFloat
+    let maxSidebarWidth: CGFloat
+    let autosaveName: String
+    let sidebar: Sidebar
+    let detail: Detail
+
+    init(
+        sidebarCollapsed: Bool,
+        minSidebarWidth: CGFloat,
+        maxSidebarWidth: CGFloat,
+        autosaveName: String,
+        @ViewBuilder sidebar: () -> Sidebar,
+        @ViewBuilder detail: () -> Detail
+    ) {
+        self.sidebarCollapsed = sidebarCollapsed
+        self.minSidebarWidth = minSidebarWidth
+        self.maxSidebarWidth = maxSidebarWidth
+        self.autosaveName = autosaveName
+        self.sidebar = sidebar()
+        self.detail = detail()
+    }
+
+    func makeNSViewController(context: Context) -> NSSplitViewController {
+        let controller = NSSplitViewController()
+        controller.splitView.isVertical = true
+        controller.splitView.dividerStyle = .thin
+        controller.splitView.autosaveName = autosaveName
+
+        let sidebarHost = NSHostingController(rootView: sidebar)
+        let sidebarItem = NSSplitViewItem(viewController: sidebarHost)
+        sidebarItem.canCollapse = true
+        sidebarItem.minimumThickness = minSidebarWidth
+        sidebarItem.maximumThickness = maxSidebarWidth
+        sidebarItem.holdingPriority = NSLayoutConstraint.Priority(260)
+        sidebarItem.isCollapsed = sidebarCollapsed
+
+        let detailHost = NSHostingController(rootView: detail)
+        let detailItem = NSSplitViewItem(viewController: detailHost)
+        detailItem.canCollapse = false
+        detailItem.minimumThickness = 320
+        detailItem.holdingPriority = .defaultLow
+
+        controller.addSplitViewItem(sidebarItem)
+        controller.addSplitViewItem(detailItem)
+
+        return controller
+    }
+
+    func updateNSViewController(_ controller: NSSplitViewController, context: Context) {
+        if let sidebarHost = controller.splitViewItems.first?.viewController as? NSHostingController<Sidebar> {
+            sidebarHost.rootView = sidebar
+        }
+        if let detailHost = controller.splitViewItems.last?.viewController as? NSHostingController<Detail> {
+            detailHost.rootView = detail
+        }
+
+        if let sidebarItem = controller.splitViewItems.first,
+           sidebarItem.isCollapsed != sidebarCollapsed {
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.22
+                ctx.allowsImplicitAnimation = true
+                sidebarItem.animator().isCollapsed = sidebarCollapsed
+            }
+        }
     }
 }
 

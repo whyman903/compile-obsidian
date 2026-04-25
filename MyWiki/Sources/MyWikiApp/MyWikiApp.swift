@@ -19,6 +19,7 @@ struct MyWikiApp: App {
                 .task { await model.bootstrapIfNeeded() }
         }
         .defaultSize(width: 560, height: 580)
+        .windowStyle(.hiddenTitleBar)
 
         MenuBarExtra {
             LauncherView(model: model)
