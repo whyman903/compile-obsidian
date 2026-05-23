@@ -42,11 +42,46 @@ public final class ClaudeQueryRunner: ClaudeQueryRunning, @unchecked Sendable {
         self.transcriptRootProvider = transcriptRootProvider
     }
 
+    nonisolated(unsafe) private static var cachedResolvedExecutable: URL?
+    private static let resolvedExecutableLock = NSLock()
+
     public static func defaultExecutable() -> URL {
         if let override = ProcessInfo.processInfo.environment["RHIZOME_CLAUDE_PATH"], !override.isEmpty {
             return URL(fileURLWithPath: override)
         }
-        return URL(fileURLWithPath: "/usr/bin/env")
+        resolvedExecutableLock.lock()
+        defer { resolvedExecutableLock.unlock() }
+        if let cached = cachedResolvedExecutable {
+            return cached
+        }
+        // GUI launches inherit launchd's minimal PATH and miss nvm/Homebrew. Ask the user's
+        // login shell where `claude` actually lives so subprocess spawn works regardless.
+        let resolved = resolveClaudeViaLoginShell().map(URL.init(fileURLWithPath:))
+            ?? URL(fileURLWithPath: "/usr/bin/env")
+        cachedResolvedExecutable = resolved
+        return resolved
+    }
+
+    private static func resolveClaudeViaLoginShell() -> String? {
+        let shellPath = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: shellPath)
+        process.arguments = ["-ilc", "command -v claude"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        process.standardInput = FileHandle.nullDevice
+        do {
+            try process.run()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0 else { return nil }
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            let path = String(decoding: data, as: UTF8.self)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return path.isEmpty ? nil : path
+        } catch {
+            return nil
+        }
     }
 
     public static func defaultTranscriptRoot() -> URL {
